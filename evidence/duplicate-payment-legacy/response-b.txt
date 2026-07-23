@@ -1,0 +1,2 @@
+{"message":"A voucher has been issued successfully","orderId":"AL-DUPLICATE-001","voucherNumber":"CP-23a75624-b28f-4351-8573-32724199446c","pinNumber":"PIN-a514bdda","pointAmount":5000,"balanceAfterPayment":"5000"}
+HTTP 201

@@ -1,0 +1,26 @@
+spring:
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3307/point_payment_lab?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul}
+    username: ${DB_USERNAME:lab}
+    password: ${DB_PASSWORD:lab}
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: true
+        highlight_sql: true
+    open-in-view: false
+  flyway:
+    enabled: true
+
+logging:
+  level:
+    org.hibernate.SQL: debug
+    org.hibernate.orm.jdbc.bind: trace
+
+server:
+  port: ${SERVER_PORT:8080}
+
+voucher-provider:
+  mock-base-url: ${VOUCHER_PROVIDER_BASE_URL:http://localhost:${SERVER_PORT:8080}/mock/voucher-provider}

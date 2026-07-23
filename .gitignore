@@ -1,0 +1,13 @@
+.gradle/
+build/
+out/
+.idea/
+*.iml
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+
+# 시스템 분석을 포함한 로컬 전용 비공개 문서
+docs/legacy-point-payment-interview-notes.md

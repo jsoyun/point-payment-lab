@@ -1,0 +1,115 @@
+@baseUrl = http://localhost:8080
+
+### 바우처 상품 목록 조회
+GET {{baseUrl}}/api/admin/voucher-products
+
+### 바우처 상품 등록
+POST {{baseUrl}}/api/admin/voucher-products
+Content-Type: application/json
+
+{
+  "voucherProductCode": "VOUCHER-CHICKEN-20000",
+  "voucherName": "치킨 2만원권",
+  "sellPrice": 20000,
+  "useTerm": 366
+}
+
+### 정상 포인트 결제
+POST {{baseUrl}}/api/payments/point/legacy
+Content-Type: application/json
+
+{
+  "orderId": "AL-TEST-001",
+  "pointWalletUid": "point-wallet-001",
+  "voucherProductId": 1,
+  "pointBalanceId": 1,
+  "point": 5000
+}
+
+### 정상 포인트 결제 - 다른 orderId
+POST {{baseUrl}}/api/payments/point/legacy
+Content-Type: application/json
+
+{
+  "orderId": "AL-TEST-002",
+  "pointWalletUid": "point-wallet-001",
+  "voucherProductId": 1,
+  "pointBalanceId": 1,
+  "point": 5000
+}
+
+### 같은 orderId 재요청 - DB unique 제약 확인용
+POST {{baseUrl}}/api/payments/point/legacy
+Content-Type: application/json
+
+{
+  "orderId": "AL-TEST-001",
+  "pointWalletUid": "point-wallet-001",
+  "voucherProductId": 1,
+  "pointBalanceId": 1,
+  "point": 5000
+}
+
+### 포인트 환불
+### 결제 응답의 voucherNumber 값을 아래에 넣어서 실행한다.
+POST {{baseUrl}}/api/refunds/point/legacy
+Content-Type: application/json
+
+{
+  "voucherNumber": "CP-여기에-결제응답-voucherNumber"
+}
+
+### 외부 바우처 발행 mock 직접 호출
+POST {{baseUrl}}/mock/voucher-provider/vouchers/issue
+Content-Type: application/json
+
+{
+  "voucherProductCode": "VOUCHER-COFFEE-5000",
+  "orderId": "AL-MOCK-001"
+}
+
+### 외부 바우처 취소 mock 직접 호출
+### mock 발행 응답의 voucherNumber 값을 아래에 넣어서 실행한다.
+POST {{baseUrl}}/mock/voucher-provider/vouchers/cancel
+Content-Type: application/json
+
+{
+  "voucherProductCode": "VOUCHER-COFFEE-5000",
+  "voucherNumber": "CP-여기에-mock-voucherNumber"
+}
+
+### 잘못된 지갑 ID - 검증 실패 확인
+POST {{baseUrl}}/api/payments/point/legacy
+Content-Type: application/json
+
+{
+  "orderId": "AL-INVALID-WALLET-001",
+  "pointWalletUid": "unknown-wallet",
+  "voucherProductId": 1,
+  "pointBalanceId": 1,
+  "point": 5000
+}
+
+### 잘못된 바우처 상품 ID - 검증 실패 확인
+POST {{baseUrl}}/api/payments/point/legacy
+Content-Type: application/json
+
+{
+  "orderId": "AL-INVALID-PRODUCT-001",
+  "pointWalletUid": "point-wallet-001",
+  "voucherProductId": 999,
+  "pointBalanceId": 1,
+  "point": 5000
+}
+
+### 잘못된 포인트 잔액 ID - 검증 실패 확인
+POST {{baseUrl}}/api/payments/point/legacy
+Content-Type: application/json
+
+{
+  "orderId": "AL-INVALID-BALANCE-001",
+  "pointWalletUid": "point-wallet-001",
+  "voucherProductId": 1,
+  "pointBalanceId": 999,
+  "point": 5000
+}

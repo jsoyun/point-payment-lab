@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Point Payment Lab</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="hero">
+    <div><span class="eyebrow">LEGACY PAYMENT SANDBOX</span><h1>Point Payment Lab</h1>
+      <p>포인트 결제부터 외부 바우처 발행, 환불까지 한 화면에서 추적하는 실습 콘솔</p></div>
+    <div class="hero-meta"><span class="pulse"></span> Spring Boot API <b>localhost:8080</b></div>
+  </header>
+
+  <nav class="tabs" aria-label="실습 영역">
+    <button class="tab active" data-tab="shop">쇼핑몰</button>
+    <button class="tab" data-tab="admin">관리자</button>
+    <button class="tab" data-tab="provider">외부 발행사 Mock</button>
+    <button class="tab" data-tab="logs">API 로그 <span id="log-count" class="count">0</span></button>
+  </nav>
+
+  <main>
+    <section id="shop" class="panel active">
+      <div class="section-heading"><div><span class="step">01</span><h2>쇼핑몰 사용자</h2><p>지갑을 확인하고 바우처를 구매한 뒤, 같은 화면에서 환불합니다.</p></div>
+        <button class="secondary" id="refresh-shop">전체 새로고침</button></div>
+
+      <div class="grid wallet-grid">
+        <article class="card accent-card"><div class="card-title"><span>내 포인트 지갑</span><span class="tag">point_wallet</span></div>
+          <label>지갑 UID<div class="input-action"><input id="wallet-uid" value="point-wallet-001"><button id="load-wallet">조회</button></div></label>
+          <div class="balance"><span>사용 가능 포인트</span><strong id="wallet-balance">—</strong></div>
+          <div id="wallet-detail" class="mini-detail">지갑을 조회해 주세요.</div></article>
+        <article class="card note-card"><div class="card-title"><span>학습 포인트</span><span class="tag muted">schema note</span></div>
+          <ul class="learning-list"><li><b>point_balance</b>는 지갑의 총 잔액</li><li><b>point_lot</b>은 만료일 순으로 차감</li><li><b>point_ledger</b>는 사용·환불 원장</li><li><b>limited_deal</b> <em>로직추가예정</em></li></ul></article>
+      </div>
+
+      <div class="section-heading compact"><div><span class="step">02</span><h2>바우처 상품</h2></div></div>
+      <div id="shop-products" class="product-grid"><div class="empty">상품을 불러오는 중입니다.</div></div>
+
+      <div class="section-heading compact"><div><span class="step">03</span><h2>발급된 바우처</h2></div>
+        <div class="filter"><input id="purchase-order-filter" placeholder="orderId로 필터"><button class="secondary" id="load-purchases">조회</button></div></div>
+      <div id="purchases" class="voucher-list"><div class="empty">구매 내역이 없습니다.</div></div>
+    </section>
+
+    <section id="admin" class="panel">
+      <div class="section-heading"><div><span class="step">ADMIN</span><h2>바우처 상품 관리</h2><p>결제 실습에 사용할 상품을 등록하고 현재 카탈로그를 확인합니다.</p></div></div>
+      <div class="grid admin-grid">
+        <article class="card"><div class="card-title">새 상품 등록</div>
+          <form id="product-form" class="form-grid">
+            <label>상품 코드<input name="voucherProductCode" value="VOUCHER-CAKE-10000" required></label>
+            <label>상품명<input name="voucherName" value="케이크 1만원권" required></label>
+            <label>판매가 (P)<input name="sellPrice" type="number" value="10000" min="1" required></label>
+            <label>유효기간 (일)<input name="useTerm" type="number" value="366" min="1" required></label>
+            <button class="wide" type="submit">바우처 상품 등록</button>
+          </form>
+        </article>
+        <article class="card response-card"><div class="card-title"><span>최근 요청 / 응답</span><span class="tag">JSON</span></div><pre id="admin-response">아직 요청이 없습니다.</pre></article>
+      </div>
+      <div class="section-heading compact"><div><h2>등록 상품 목록</h2></div><button class="secondary" id="load-admin-products">새로고침</button></div>
+      <div class="table-wrap"><table><thead><tr><th>ID</th><th>상품 코드</th><th>상품명</th><th>판매가</th><th>유효기간</th></tr></thead><tbody id="admin-products"></tbody></table></div>
+    </section>
+
+    <section id="provider" class="panel">
+      <div class="section-heading"><div><span class="step">MOCK</span><h2>외부 쿠폰 발행사</h2><p>실제 외부 시스템 관점에서 발행·취소 호출과 저장 결과를 관찰합니다.</p></div>
+        <div class="filter"><input id="provider-order-filter" placeholder="orderId로 필터"><button id="load-provider">조회</button></div></div>
+      <div class="metric-grid"><article class="metric"><span>전체 API 호출</span><strong id="calls-total">0</strong></article><article class="metric issue"><span>발행 호출</span><strong id="calls-issue">0</strong></article><article class="metric cancel"><span>취소 호출</span><strong id="calls-cancel">0</strong></article></div>
+      <div class="flow-hint"><span>쇼핑몰 결제</span><i>→ issue API →</i><span>provider_voucher</span><i>→ cancel API →</i><span>CANCELED</span></div>
+      <div class="table-wrap"><table><thead><tr><th>ID</th><th>orderId</th><th>상품 코드</th><th>바우처 번호</th><th>상태</th><th>발행 시각</th></tr></thead><tbody id="provider-vouchers"></tbody></table></div>
+    </section>
+
+    <section id="logs" class="panel">
+      <div class="section-heading"><div><span class="step">TRACE</span><h2>API 요청 / 응답 로그</h2><p>이 웹 화면에서 발생한 HTTP 통신을 최신순으로 누적합니다. 페이지를 새로고침하면 초기화됩니다.</p></div><div class="log-actions"><button class="secondary" id="download-logs">JSON 다운로드</button><button class="danger-ghost" id="clear-logs">로그 비우기</button></div></div>
+      <div id="api-logs" class="log-list"><div class="empty">아직 API 호출이 없습니다.</div></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
