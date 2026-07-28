@@ -597,6 +597,32 @@ PointRefundController
 이 순서대로 코드를 따라가고, DBeaver에서 테이블 변화를 같이 보면 결제/환불 흐름을 가장 빠르게 이해할 수 있다.
 ## 실습 UI API 빠른 참조
 
+### PaymentAttempt 기반 멱등 결제
+
+`POST /api/payments/point/idempotent`
+
+Legacy API를 보존하면서 개선 전후를 비교하기 위해 추가한 별도 결제 API다. 외부 바우처 발행 전에 짧은 독립 트랜잭션으로 `payment_attempt.order_id`를 `PROCESSING` 상태로 선점한다.
+
+```text
+최초 요청
+-> orderId 선점
+-> 외부 바우처 발행
+-> Legacy 내부 결제 처리
+-> PaymentAttempt SUCCEEDED
+
+동시 중복 요청
+-> orderId unique 충돌
+-> PROCESSING 확인
+-> 외부 API를 호출하지 않고 HTTP 409
+
+완료 후 동일 요청
+-> 저장된 바우처 결과 반환
+-> 외부 API를 호출하지 않고 HTTP 200
+-> Idempotency-Replayed: true
+```
+
+같은 `orderId`에 지갑, 상품, 잔액 또는 결제 포인트가 다른 요청이 들어오면 `IDEMPOTENCY_KEY_REUSED`로 거절한다.
+
 ### 바우처 구매
 
 `POST /api/payments/point/legacy`

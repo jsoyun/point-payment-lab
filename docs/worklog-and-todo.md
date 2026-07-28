@@ -162,6 +162,82 @@ Legacy 따닥 결제 문제의 재현과 Deadlock 분석을 완료했으며, 개
 | Deadlock | 1 | 0 |
 | 보상 취소 | 1 | 0 |
 
+#### 2026-07-23 구현 상태
+
+구현 완료:
+
+- Flyway V4로 `payment_attempt` 테이블과 `order_id` unique 제약 추가
+- `POST /api/payments/point/idempotent` 추가
+- `REQUIRES_NEW` 짧은 트랜잭션으로 외부 호출 전 `PROCESSING` 선점
+- 최초 요청만 기존 결제 흐름에 진입
+- 동시 처리 중인 동일 요청은 `409 PAYMENT_PROCESSING`
+- 완료된 동일 요청은 저장 결과와 `Idempotency-Replayed: true`를 반환
+- 같은 `orderId`에 다른 요청 내용이 들어오면 `409 IDEMPOTENCY_KEY_REUSED`
+- 실패한 최초 요청은 `FAILED`와 실패 메시지 기록
+- 개선 전용 `scripts/run-idempotent-payment-test.sh` 추가
+- 선점, 성공 결과 재사용, 처리 중 차단, 다른 payload 거절, 실패 기록 단위 테스트 추가
+
+검증 결과:
+
+- `./gradlew test` 성공, 단위 테스트 5개 통과
+- Flyway V4가 실제 MySQL에 적용되고 Hibernate schema validation 통과
+- 별도 8081 서버 기동 성공
+- 2026-07-28 실제 동시 HTTP 요청 검증 성공
+- 요청 A는 `HTTP 201`로 결제 성공
+- 요청 B는 외부 API 호출 전에 `HTTP 409`, `PAYMENT_PROCESSING`으로 차단
+- Deadlock과 보상 취소가 발생하지 않음
+
+2026-07-28 DB 검증 결과:
+
+| 확인 대상 | 실제 결과 |
+| --- | --- |
+| `payment_attempt` | 동일 `order_id` 1건, `SUCCEEDED` |
+| `provider_voucher` | 동일 `order_id` 1건, `ISSUED` |
+| `voucher_purchase` | 동일 `order_id` 1건, `ISSUED / UNUSED` |
+| `point_balance` | 5,000 포인트가 한 번만 차감되어 0 |
+
+발행된 바우처:
+
+```text
+orderId: AL-IDEMPOTENT-VERIFY-001
+voucherNumber: CP-3995487d-0929-45ba-a182-30f1c87c33c6
+pointAmount: 5000
+```
+
+Legacy baseline과 비교:
+
+| 항목 | Legacy | PaymentAttempt 개선 후 |
+| --- | ---: | ---: |
+| 동시 요청 | 2 | 2 |
+| 외부 발행 | 2 | 1 |
+| 내부 구매 | 1 | 1 |
+| Deadlock | 1 | 0 |
+| 보상 취소 | 1 | 0 |
+| 중복 요청 응답 | HTTP 500 | HTTP 409 `PAYMENT_PROCESSING` |
+
+포트폴리오용 개선 전후 문서:
+
+- `docs/payment-idempotency-improvement-result.md`
+- Legacy 문제 재현, Deadlock 원인, PaymentAttempt 설계, 실제 HTTP/DB 결과, 정량 비교와 시퀀스 다이어그램을 한 문서에 정리했다.
+
+수동 검증:
+
+```bash
+bash scripts/run-idempotent-payment-test.sh AL-IDEMPOTENT-VERIFY-001
+```
+
+기대 결과:
+
+```text
+동시 요청 중 1건: HTTP 201
+다른 1건: HTTP 409, code=PAYMENT_PROCESSING
+provider_voucher: 동일 orderId 1건
+voucher_purchase: 동일 orderId 1건
+payment_attempt: 동일 orderId 1건, status=SUCCEEDED
+```
+
+결제 완료 후 같은 명령을 다시 실행하면 두 요청 모두 저장된 기존 결과를 `HTTP 200`으로 받아야 하며 외부 발행 건수는 증가하지 않아야 한다.
+
 ### 2차: 외부 발행사 이중 멱등성
 
 - `provider_voucher.order_id` unique 제약 추가

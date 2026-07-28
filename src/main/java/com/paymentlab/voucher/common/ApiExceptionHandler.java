@@ -1,6 +1,7 @@
 package com.paymentlab.voucher.common;
 
 import java.time.LocalDateTime;
+import com.paymentlab.voucher.payment.application.PaymentAttemptConflictException;
 import java.util.Map;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
@@ -11,6 +12,19 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
+
+    @ExceptionHandler(PaymentAttemptConflictException.class)
+    public ResponseEntity<Map<String, Object>> handlePaymentAttemptConflict(
+            PaymentAttemptConflictException error
+    ) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(Map.of(
+                        "timestamp", LocalDateTime.now().toString(),
+                        "status", HttpStatus.CONFLICT.value(),
+                        "code", error.getCode(),
+                        "message", error.getMessage()
+                ));
+    }
 
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<Map<String, Object>> handleBadRequest(IllegalArgumentException error) {
