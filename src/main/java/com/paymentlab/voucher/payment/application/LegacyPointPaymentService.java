@@ -39,6 +39,7 @@ public class LegacyPointPaymentService {
     private final PointLedgerRepository pointLedgerRepository;
     private final VoucherPurchaseRepository voucherPurchaseRepository;
     private final VoucherProviderClient voucherProviderClient;
+    private final PointPaymentPreValidator pointPaymentPreValidator;
     private final TransactionTemplate transactionTemplate;
 
     public LegacyPointPaymentService(
@@ -50,6 +51,7 @@ public class LegacyPointPaymentService {
             PointLedgerRepository pointLedgerRepository,
             VoucherPurchaseRepository voucherPurchaseRepository,
             VoucherProviderClient voucherProviderClient,
+            PointPaymentPreValidator pointPaymentPreValidator,
             PlatformTransactionManager transactionManager
     ) {
         this.pointWalletRepository = pointWalletRepository;
@@ -60,6 +62,7 @@ public class LegacyPointPaymentService {
         this.pointLedgerRepository = pointLedgerRepository;
         this.voucherPurchaseRepository = voucherPurchaseRepository;
         this.voucherProviderClient = voucherProviderClient;
+        this.pointPaymentPreValidator = pointPaymentPreValidator;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
@@ -74,6 +77,19 @@ public class LegacyPointPaymentService {
         if (!pointBalance.getPointWalletId().equals(pointWallet.getId())) {
             throw new IllegalArgumentException("point balance does not belong to point wallet");
         }
+
+        long usableLotTotal = pointLotRepository.findUsableLots(
+                        pointWallet.getId(),
+                        pointBalance.getId()
+                ).stream()
+                .mapToLong(lot -> Money.parse(lot.getAmount()))
+                .sum();
+        pointPaymentPreValidator.validate(
+                request.point(),
+                voucherProduct.getSellPrice(),
+                Money.parse(pointBalance.getBalance()),
+                usableLotTotal
+        );
 
         IssueVoucherResponse issuedVoucher = voucherProviderClient.issue(new IssueVoucherRequest(
                 voucherProduct.getVoucherProductCode(),

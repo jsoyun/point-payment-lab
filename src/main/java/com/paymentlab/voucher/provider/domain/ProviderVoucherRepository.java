@@ -8,6 +8,8 @@ public interface ProviderVoucherRepository extends JpaRepository<ProviderVoucher
 
     Optional<ProviderVoucher> findByVoucherNumber(String voucherNumber);
 
+    Optional<ProviderVoucher> findByOrderId(String orderId);
+
     List<ProviderVoucher> findAllByOrderByIdDesc();
 
     List<ProviderVoucher> findByOrderIdOrderByIdDesc(String orderId);

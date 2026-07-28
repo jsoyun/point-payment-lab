@@ -2,6 +2,8 @@ package com.paymentlab.voucher.common;
 
 import java.time.LocalDateTime;
 import com.paymentlab.voucher.payment.application.PaymentAttemptConflictException;
+import com.paymentlab.voucher.payment.application.PointPaymentValidationException;
+import com.paymentlab.voucher.provider.ProviderIssueConflictException;
 import java.util.Map;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
@@ -21,6 +23,32 @@ public class ApiExceptionHandler {
                 .body(Map.of(
                         "timestamp", LocalDateTime.now().toString(),
                         "status", HttpStatus.CONFLICT.value(),
+                        "code", error.getCode(),
+                        "message", error.getMessage()
+                ));
+    }
+
+    @ExceptionHandler(ProviderIssueConflictException.class)
+    public ResponseEntity<Map<String, Object>> handleProviderIssueConflict(
+            ProviderIssueConflictException error
+    ) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(Map.of(
+                        "timestamp", LocalDateTime.now().toString(),
+                        "status", HttpStatus.CONFLICT.value(),
+                        "code", error.getCode(),
+                        "message", error.getMessage()
+                ));
+    }
+
+    @ExceptionHandler(PointPaymentValidationException.class)
+    public ResponseEntity<Map<String, Object>> handlePointPaymentValidation(
+            PointPaymentValidationException error
+    ) {
+        return ResponseEntity.unprocessableEntity()
+                .body(Map.of(
+                        "timestamp", LocalDateTime.now().toString(),
+                        "status", HttpStatus.UNPROCESSABLE_ENTITY.value(),
                         "code", error.getCode(),
                         "message", error.getMessage()
                 ));
