@@ -640,6 +640,49 @@ Legacy API를 보존하면서 개선 전후를 비교하기 위해 추가한 별
 | `pointAmount` | 이번 구매에서 사용한 포인트 |
 | `balanceAfterPayment` | 결제 직후 남은 총 포인트 잔액 |
 
+### `voucherNumber`와 `pinNumber`의 차이
+
+| 필드 | 역할 | 비유 |
+| --- | --- | --- |
+| `voucherNumber` | 어떤 바우처인지 식별하는 공개 식별자 | 상품권 번호 |
+| `pinNumber` | 바우처를 사용할 권한이 있는지 확인하는 비밀 인증값 | 상품권 비밀번호 |
+
+외부 발행사 Mock은 바우처를 발행할 때 두 값을 함께 생성한다. 쇼핑몰은
+발행 결과를 `voucher_purchase`에 저장하고 사용자에게 전달한다.
+
+향후 바우처 사용(Redemption) API에서는 다음과 같이 두 값을 함께 받는다.
+
+```http
+POST /api/voucher-redemptions
+Content-Type: application/json
+
+{
+  "voucherNumber": "CP-...",
+  "pinNumber": "PIN-..."
+}
+```
+
+사용 처리 시 확인할 조건:
+
+1. `voucherNumber`가 존재하는지 확인한다.
+2. 요청한 `pinNumber`가 발급된 PIN과 일치하는지 확인한다.
+3. 바우처가 발행 상태이고 취소되지 않았는지 확인한다.
+4. 아직 사용되지 않았는지 확인한다.
+5. 현재 시각이 유효기간 안인지 확인한다.
+6. 검증에 성공하면 `UNUSED`에서 `USED`로 변경한다.
+
+현재 프로젝트에는 발행·저장·조회·환불까지만 구현되어 있다. `pinNumber`는
+생성되어 사용자에게 전달되지만, 이를 검증해 실제 상품을 구매하는 Redemption
+기능은 아직 구현되지 않았다.
+
+운영 보안 주의사항:
+
+- API 로그와 애플리케이션 로그에 PIN 평문을 남기지 않는다.
+- 관리자 목록과 일반 조회 응답에서는 PIN을 마스킹한다.
+- DB 저장 시 암호화와 키 관리 방식을 검토한다.
+- PIN 원문 조회 권한을 최소화하고 접근 이력을 남긴다.
+- HTTPS로 전송하고 오류 응답에서 PIN 존재 여부가 노출되지 않게 한다.
+
 ### 지갑 잔액 요약
 
 `GET /api/point-wallets/{pointWalletUid}/summary`
@@ -667,3 +710,20 @@ voucher-purchases
 mock/voucher-provider/vouchers
 -> 외부 발행사가 받은 발행 요청과 바우처 상태
 ```
+## 외부 Mock 발행 API 멱등성
+
+`POST /mock/voucher-provider/vouchers/issue`는 `orderId`를 외부 발행사의
+멱등성 키로 사용한다.
+
+```text
+MockVoucherProviderController
+→ IdempotentProviderVoucherIssueService
+→ ProviderVoucherIssueWriter (REQUIRES_NEW)
+→ provider_voucher.order_id UNIQUE
+```
+
+- 최초 요청은 새 바우처를 생성하고 `201 Created`를 반환한다.
+- 같은 주문·같은 상품 재요청은 기존 바우처와 `200 OK`를 반환한다.
+- 재사용 응답에는 `Idempotency-Replayed: true`가 포함된다.
+- 같은 주문·다른 상품 요청은 `409 IDEMPOTENCY_KEY_REUSED`로 거절한다.
+- 사전 조회가 아니라 DB unique 제약을 동시 요청의 최종 방어선으로 사용한다.

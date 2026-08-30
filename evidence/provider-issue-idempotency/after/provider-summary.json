@@ -1,0 +1,18 @@
+{
+  "callCount": {
+    "total": 4,
+    "issue": 4,
+    "cancel": 0
+  },
+  "vouchers": [
+    {
+      "id": 1,
+      "voucherProductCode": "VOUCHER-COFFEE-5000",
+      "orderId": "PROVIDER-IDEMPOTENT-001",
+      "voucherNumber": "CP-0bab360e-9dcc-4901-b051-fcc239adb59f",
+      "pinNumber": "PIN-64bf3931",
+      "status": "ISSUED",
+      "createdAt": "2026-07-28T22:13:48.422963"
+    }
+  ]
+}

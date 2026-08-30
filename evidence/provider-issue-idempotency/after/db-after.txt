@@ -1,0 +1,9 @@
+id	order_id	voucher_product_code	voucher_number	pin_number	status	created_at
+1	PROVIDER-IDEMPOTENT-001	VOUCHER-COFFEE-5000	CP-0bab360e-9dcc-4901-b051-fcc239adb59f	PIN-64bf3931	ISSUED	2026-07-28 22:13:48.422963
+
+version	description	success
+1	create legacy payment tables	1
+2	seed legacy payment data	1
+3	add table column comments	1
+4	create payment attempt	1
+5	make provider voucher order id unique	1

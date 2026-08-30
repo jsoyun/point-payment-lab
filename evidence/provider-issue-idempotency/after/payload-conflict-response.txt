@@ -1,0 +1,4 @@
+HTTP/1.1 409
+Content-Type: application/json
+
+{"status":409,"code":"IDEMPOTENCY_KEY_REUSED","timestamp":"2026-07-28T22:14:00.850726","message":"orderId was already used with a different voucher product"}
