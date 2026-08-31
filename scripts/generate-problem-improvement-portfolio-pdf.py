@@ -13,6 +13,7 @@ B = module_from_spec(SPEC)
 SPEC.loader.exec_module(B)
 
 OUTPUT = ROOT / "output" / "pdf" / "point-payment-lab-portfolio.pdf"
+GITHUB_URL = "https://github.com/jsoyun/point-payment-lab"
 W, H = B.W, B.H
 TOTAL = 15
 
@@ -96,6 +97,8 @@ def cover(c):
     B.text(c, "기존 문제점  →  수정한 부분  →  개선 결과  →  달라진 이유", 80, 160, 12, white, "KoreanBold")
     B.text(c, "Java 17 · Spring Boot · JPA · MySQL · Redis · Redisson", 80, 126, 9.5, HexColor("#AFC7FF"), "KoreanBold")
     B.text(c, "개인 프로젝트 · 백엔드 설계 / 구현 / 검증", 80, 103, 9, white)
+    B.text(c, GITHUB_URL, 58, 62, 9, HexColor("#AFC7FF"), "KoreanBold")
+    c.linkURL(GITHUB_URL, (58, 57, 280, 72), relative=0, thickness=0)
 
 
 def project_roles(c):
