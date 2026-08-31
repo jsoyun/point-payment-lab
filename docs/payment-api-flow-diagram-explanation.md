@@ -9,8 +9,8 @@
 그림 없이 현재 결제 개선 과정을 복습할 때 사용할 수 있다.
 
 - [결제프로젝트 diagrams.net](https://app.diagrams.net/#G15VCYdDP6PvsHo-a5TCzJpYTm5Hfbrb9A)
-- 1~3차 개선은 실제 코드 구현과 검증을 완료했다.
-- `07-4차 Redis 분산락 API 흐름`은 앞으로 구현할 목표 설계이며 현재 동작하는 코드가 아니다.
+- 1~4차 개선과 조건부 잔액 차감은 실제 코드 구현과 검증을 완료했다.
+- `07-4차 Redis+DB 멱등성 API 흐름`은 2개 인스턴스와 장애 시나리오의 실제 결과를 반영했다.
 
 ## 01. Legacy 문제 발생 흐름
 
@@ -179,9 +179,9 @@ check-then-act 경쟁 조건이라고 하며, 실제 차감 시점에는
 `WHERE balance >= amount` 조건부 UPDATE나 row lock 같은 DB 차원의 보호가
 추가로 필요하다.
 
-## 07. 4차 개선 설계안: Redis 분산락 API 흐름
+## 07. 4차 개선 완료: Redis+DB 멱등성 API 흐름
 
-이 페이지는 구현 결과가 아니라 앞으로 실습할 목표 구조다. 여러 API 서버
+이 페이지는 설계안을 실제 구현하고 검증한 결과를 나타낸다. 여러 API 서버
 인스턴스 A와 B가 실행되는 환경에서 클라이언트가 동일한
 `Idempotency-Key`로 요청을 재전송했다고 가정한다. 두 서버의 Java 메모리는
 서로 공유되지 않기 때문에 `synchronized`나 `ReentrantLock`만으로는 다른
@@ -218,21 +218,30 @@ TTL 만료, Redis 재시작, 네트워크 장애나 캐시 eviction이 발생할
 같은 지갑을 동시에 사용하는 문제는 해결하지 않는다. 그 문제는 조건부
 UPDATE나 DB row lock이 담당한다.
 
+실제 검증에서는 8080과 8081 인스턴스에 같은 키를 동시에 보내 외부 발행과
+내부 구매가 각각 한 건만 생성되고 두 응답이 모두 동일한 HTTP 201/body임을
+확인했다. 완료 재요청 100회의 평균은 DB-only 8.118ms, Redis+DB 2.588ms였다.
+Redis를 중지한 상태에서도 MySQL의 최초 응답으로 HTTP 201을 replay했다.
+
+서로 다른 주문과 멱등키 두 건을 마지막 5,000점에 동시에 보내는 실험에서는
+Redis lock이 서로 달랐지만 조건부 UPDATE로 한 건만 HTTP 201이 되고 다른 한
+건은 HTTP 409가 됐다. 최종 잔액은 0, 내부 구매는 1건으로 유지됐다.
+
 ## 전체 개선 흐름 정리
 
 이 프로젝트의 개선은 하나의 기술로 모든 문제를 해결하는 방식이 아니다.
 쇼핑몰의 `payment_attempt`은 결제 요청 전체의 중복 실행을 막고, 외부
 발행사의 unique 제약은 쿠폰 발행 자체의 중복을 막는다. 사전 검증은 실패가
-확실한 요청을 외부로 보내지 않으며, 향후 조건부 UPDATE는 실제 잔액 차감
+확실한 요청을 외부로 보내지 않으며, 조건부 UPDATE는 실제 잔액 차감
 시점의 경쟁을 제어한다. Redis와 Redisson은 여러 서버가 같은 멱등 요청을
 처리할 때의 조정과 응답 재사용을 담당하고, DB 기록은 장애 상황에서도
 복구할 수 있는 최종 근거로 유지한다.
 
 따라서 포트폴리오에서는 “Redis를 도입해 중복 결제를 해결했다”라고 한 문장으로
 설명하기보다, 문제의 종류에 따라 서로 다른 방어선을 배치했다는 점을
-강조하는 것이 적절하다. 현재까지 실제 구현·검증한 범위는 1차
-`PaymentAttempt`, 2차 외부 발행 멱등성, 3차 외부 호출 전 검증이며, 4차
-Redis 분산락·결과 캐시와 조건부 잔액 차감은 다음 구현 및 검증 대상이다.
+강조하는 것이 적절하다. 현재까지 1차 `PaymentAttempt`, 2차 외부 발행 멱등성,
+3차 외부 호출 전 검증, 4차 Redis 분산락·결과 캐시·DB fallback과 조건부 잔액
+차감까지 실제 구현하고 검증했다.
 
 ## 관련 자료
 
@@ -240,6 +249,8 @@ Redis 분산락·결과 캐시와 조건부 잔액 차감은 다음 구현 및 �
 - `docs/payment-idempotency-improvement-result.md`
 - `docs/provider-voucher-idempotency-improvement-plan.md`
 - `docs/redis-payment-idempotency-design.md`
+- `docs/redis-payment-idempotency-result.md`
+- `docs/conditional-point-balance-debit-result.md`
 - `evidence/duplicate-payment-legacy/`
 - `evidence/provider-issue-idempotency/`
 - `evidence/insufficient-balance-legacy/`

@@ -1,272 +1,205 @@
-# point-payment-lab
+# Point Payment Lab
 
-기존 쇼핑몰 포인트 결제 방식을 Java/Spring Boot로 재현하는 실험 프로젝트입니다.
+Legacy 포인트 결제에서 발생하는 **외부 쿠폰 중복 발행, MySQL Deadlock, 잔액
+동시성 문제를 재현하고 단계적으로 개선한 백엔드 프로젝트**입니다.
 
-목표는 먼저 기존 방식의 흐름을 그대로 따라 구현한 뒤, 같은 `orderId`로 동시에 결제 요청이 들어올 때 외부 바우처 발행 API가 중복 호출될 수 있는 문제를 확인하고, 이후 API 서버 레벨 멱등성 개선을 적용하는 것입니다.
+단순히 Redis를 추가하는 데 그치지 않고, 같은 요청의 중복 실행은 Redis와
+`payment_attempt`, 외부 쿠폰 중복은 외부 발행사 DB, 서로 다른 주문의 잔액
+경쟁은 MySQL 조건부 UPDATE가 각각 담당하도록 책임을 분리했습니다.
 
-## 실행 준비
+> [15페이지 포트폴리오 PDF 보기](output/pdf/point-payment-lab-portfolio.pdf)
+
+## 핵심 결과
+
+| 검증 항목 | Legacy | 개선 후 |
+| --- | ---: | ---: |
+| 같은 `orderId`의 외부 쿠폰 발행 | 2건 | 1건 |
+| MySQL Deadlock | 1건 | 0건 |
+| 잔액 부족 요청의 외부 쿠폰 발행 | 1건 | 0건 |
+| 서로 다른 주문의 포인트 중복 차감 | 위험 존재 | 0건 |
+| 완료 요청 100회 평균 응답 시간(로컬) | 8.118ms | 2.588ms |
+
+성능 수치는 로컬에서 완료 요청을 100회 순차 재전송한 방향성 비교이며 운영 TPS를
+의미하지 않습니다. HTTP 응답, 외부 호출 결과와 DB 상태는 [`evidence`](evidence)에
+가공하지 않은 형태로 저장했습니다.
+
+## 문제와 개선 과정
+
+### Legacy 문제 재현
+
+기존 흐름은 외부 쿠폰을 먼저 발급한 뒤 쇼핑몰 MySQL 트랜잭션에서 포인트를
+차감합니다.
+
+```text
+결제 요청
+→ 지갑·상품·잔액 조회
+→ 외부 쿠폰 발행 API 호출
+→ MySQL 포인트 차감·원장·구매 저장
+→ HTTP 응답
+```
+
+같은 `orderId`로 두 요청을 동시에 보내면 두 요청이 모두 외부 API까지 진행하여
+쿠폰이 두 장 발급됐습니다. 내부에서는 한 요청만 성공하고 다른 요청은 Deadlock과
+HTTP 500을 반환했습니다.
+
+### 1차: `payment_attempt`로 실행권 선점
+
+- `payment_attempt.orderId` unique 제약
+- 외부 호출 전 `PROCESSING` 상태 저장
+- `saveAndFlush`로 INSERT와 unique 충돌을 즉시 확인
+- 선점 성공 요청만 외부 쿠폰 발행
+- 동시 중복 요청은 HTTP 409 반환
+
+`saveAndFlush`가 직접 선점을 제공하는 것은 아닙니다. unique 제약이 한 요청만
+INSERT에 성공하도록 보장하고, `saveAndFlush`는 그 결과를 외부 호출 전에 확인할
+수 있도록 SQL 실행 시점을 앞당깁니다.
+
+### 2차: 외부 발행사 API 멱등성
+
+- `provider_voucher.orderId` unique 제약
+- 같은 주문·같은 상품 재요청은 최초 쿠폰 번호와 PIN 반환
+- 같은 주문·다른 상품 요청은 HTTP 409 거절
+- 쇼핑몰 API를 우회해 외부 발행사 API를 호출해도 쿠폰 한 장만 생성
+
+### 3차: 외부 API 호출 전 검증
+
+- 상품 판매가와 요청 포인트 비교
+- `point_balance` 총잔액 검증
+- 만료되지 않은 미사용 `point_lot` 합계 검증
+- 잔액 부족 요청은 HTTP 422 반환
+- 실패가 확실한 요청의 외부 쿠폰 발행·취소 제거
+
+### 4차: Redis + MySQL 결제 멱등성
+
+- 필수 `Idempotency-Key`와 SHA-256 request hash
+- Redisson `RLock`으로 여러 Spring Boot 인스턴스의 동시 실행 조율
+- Redis 결과 cache와 lock 획득 후 Redis·DB 이중 확인
+- 최초 HTTP status/body를 MySQL `payment_attempt`에 영구 저장
+- Redis cache 만료 시 MySQL 결과로 cache 재생성
+- Redis 장애 시 MySQL에 저장한 최초 응답 반환
+- 같은 멱등키로 다른 payload를 보내면 HTTP 422 거절
+
+Redis는 여러 서버가 실행 상태와 완료 결과를 공유하기 위해 사용했습니다. 다만
+Redis 장애나 TTL 만료에도 결제를 재실행하지 않도록 최종 근거는 MySQL에 남깁니다.
+
+### 5차: MySQL 조건부 잔액 차감
+
+서로 다른 `orderId`와 멱등키는 서로 다른 Redis lock을 사용하므로 같은 지갑의
+잔액 경쟁을 별도로 막아야 합니다.
+
+```sql
+update point_balance
+set balance = balance - :amount
+where id = :id
+  and balance >= :amount;
+```
+
+변경 행이 1건인 요청만 결제를 계속하고, 0건이면 HTTP 409
+`POINT_BALANCE_CONFLICT`를 반환합니다. MySQL이 최신 잔액으로 조건을 다시
+평가하므로 포인트 중복 차감을 방지합니다.
+
+## 기술 스택
+
+- Java 17, Spring Boot 3.3
+- Spring Data JPA, TransactionTemplate
+- MySQL 8, Flyway
+- Redis 7, Redisson
+- Docker Compose
+- JUnit 5, Mockito
+- ReportLab, Poppler 기반 포트폴리오 PDF 생성·검수
+
+## 시스템 역할
+
+| 구성 요소 | 역할 |
+| --- | --- |
+| Client | 웹 UI, curl, 테스트 스크립트로 결제 요청·재시도 전송 |
+| Shopping API | HTTP 요청·응답을 담당하는 Spring MVC Controller 계층 |
+| Application | 멱등성, 검증, 외부 호출과 포인트 차감 순서를 조율하는 Service 계층 |
+| MySQL | 잔액·원장·구매·결제 시도와 최초 응답의 영구 저장소 |
+| 외부 쿠폰 발행사 | 프로젝트 내부 Provider Mock API로 재현한 외부 시스템 경계 |
+| Redis | 다중 인스턴스 분산락과 완료 결과 cache |
+
+## 실행 방법
+
+### 1. MySQL과 Redis 실행
 
 ```bash
 docker compose up -d
 ```
 
-이 프로젝트는 Gradle 기반이며, Gradle Wrapper를 포함합니다.
+MySQL과 Redis 포트는 기본적으로 `127.0.0.1`에만 바인딩됩니다. 비밀번호와 포트는
+환경변수로 변경할 수 있습니다.
+
+### 2. 애플리케이션 실행
 
 ```bash
 ./gradlew bootRun
 ```
 
-## 구현되어있는 내용
+브라우저에서 `http://localhost:8080`으로 접속하면 관리자, 쇼핑몰 사용자, 외부
+발행사 Mock과 API 로그 탭을 사용할 수 있습니다.
 
-### 1. 포인트 결제 legacy 흐름 재현
-
-`POST /api/payments/point/legacy` API로 전액 포인트 결제를 처리합니다.
-
-현재 구현은 카드/PG 결제가 아니라 포인트만 사용하는 결제 흐름입니다. 요청으로 전달된 `pointWalletUid`, `voucherProductId`, `pointBalanceId`, `point`를 기준으로 지갑, 상품, 잔액, 사용 가능한 포인트 묶음을 조회합니다.
-
-결제 흐름은 다음 순서로 동작합니다.
-
-```text
-결제 요청 수신
--> 지갑 조회
--> 바우처 상품 조회
--> 포인트 잔액 조회
--> 외부 바우처 발행 API 호출
--> 내부 DB transaction 실행
--> 구매 이력 저장
--> 포인트 원장 저장
--> 총 포인트 잔액 차감
--> 출처별 포인트 잔액 차감
--> 사용된 포인트 묶음에 바우처 번호 연결
-```
-
-### 2. 외부 바우처 제공사 API mock 구현
-
-실제 외부 바우처/쿠폰 발행사를 대신해 mock API를 구현했습니다.
-
-- `POST /mock/voucher-provider/vouchers/issue`
-- `POST /mock/voucher-provider/vouchers/cancel`
-
-발행 API가 호출되면 `provider_voucher` 테이블에 발행 이력을 저장합니다. 이 테이블은 실제 내부 결제 DB라기보다, 외부 시스템이 처리한 결과를 관찰하기 위한 실험용 저장소 역할을 합니다.
-
-이 구조 덕분에 같은 `orderId` 요청이 동시에 들어왔을 때 내부 DB에는 하나만 저장되더라도 외부 바우처 발행 호출이 여러 번 일어났는지 확인할 수 있습니다.
-
-### 3. 내부 DB transaction 처리[VoucherPurchase.java](src%2Fmain%2Fjava%2Fcom%2Fpaymentlab%2Fvoucher%2Fpayment%2Fdomain%2FVoucherPurchase.java)
-
-외부 바우처 발행이 성공한 뒤 내부 DB 변경은 Spring `TransactionTemplate`으로 묶어 처리합니다.
-
-transaction 안에서 처리되는 주요 변경은 다음과 같습니다.
-
-- `voucher_purchase`: 바우처 구매/결제 결과 저장
-- `point_ledger`: 포인트 사용 이력 저장
-- `point_balance`: 총 포인트 잔액 차감
-- `point_source_balance`: 출처별 포인트 잔액 차감
-- `point_lot`: 사용된 포인트 묶음 상태 변경
-
-내부 DB 저장 중 예외가 발생하면 transaction은 롤백됩니다. 또한 현재 legacy 구현은 DB 저장 실패 시 이미 발행된 외부 바우처를 취소하기 위해 외부 취소 API를 호출합니다.
-
-### 4. DB unique 제약을 통한 중복 저장 방어
-
-`voucher_purchase.order_id`에 unique 제약을 걸어 같은 거래번호가 내부 구매 이력에 중복 저장되지 않도록 했습니다.
-
-즉, 동시에 같은 `orderId` 요청이 들어와도 내부 결제 결과는 하나만 성공하도록 DB 레벨 방어가 존재합니다. 다만 이 방어는 외부 바우처 API 호출 이후에 동작합니다.
-
-### 5. 포인트 환불 legacy 흐름 재현
-
-`POST /api/refunds/point/legacy` API로 포인트 결제 환불을 처리합니다.
-
-환불 흐름은 다음 순서로 동작합니다.
-
-```text
-환불 요청 수신
--> voucherNumber 기준 구매 이력 조회
--> 결제 당시 포인트 원장 조회
--> 사용 처리된 포인트 묶음 조회
--> 내부 DB transaction 실행
--> 구매 이력 취소 상태 변경
--> 총 포인트 잔액 복구
--> 출처별 포인트 잔액 복구
--> 포인트 묶음 사용 상태 해제
--> 환불 원장 저장
--> 환불성 포인트 입금 기록 저장
--> 외부 바우처 취소 API 호출
-```
-
-현재 환불 구현은 포인트 복구 자체는 처리하지만, 외부 바우처 취소 API 호출이 내부 transaction 이후에 실행됩니다. 따라서 외부 취소 API 실패 시 내부 DB는 이미 환불 처리되었는데 외부 바우처는 아직 유효한 상태가 될 수 있습니다.
-
-## 핵심 API
-
-바우처 상품 등록 API:
-
-```http
-POST /api/admin/voucher-products
-Content-Type: application/json
-
-{
-  "voucherProductCode": "VOUCHER-CHICKEN-20000",
-  "voucherName": "치킨 2만원권",
-  "sellPrice": 20000,
-  "useTerm": 366
-}
-```
-
-바우처 상품 목록 조회 API:
-
-```http
-GET /api/admin/voucher-products
-```
-
-기존 방식 재현 결제 API:
-
-```http
-POST /api/payments/point/legacy
-Content-Type: application/json
-
-{
-  "orderId": "AL123456789",
-  "pointWalletUid": "point-wallet-001",
-  "voucherProductId": 1,
-  "pointBalanceId": 1,
-  "point": 5000
-}
-```
-
-외부 바우처 제공사 API mock:
-
-- `POST /mock/voucher-provider/vouchers/issue`
-- `POST /mock/voucher-provider/vouchers/cancel`
-
-기존 방식 재현 환불 API:
-
-```http
-POST /api/refunds/point/legacy
-Content-Type: application/json
-
-{
-  "voucherNumber": "CP-..."
-}
-```
-
-## 재현하려는 기존 방식
-
-```text
-결제 요청 수신
--> 상품/지갑/잔액/포인트 묶음 조회
--> 외부 바우처 발행 API 먼저 호출
--> 바우처 발행 성공 시 내부 DB transaction 실행
--> VoucherPurchase, PointLedger, PointBalance, PointSourceBalance, PointLot 변경
--> DB transaction 실패 시 외부 바우처 취소 API 호출
-```
-
-이 방식은 DB의 `voucher_purchase.order_id` unique 제약으로 내부 중복 저장은 막을 수 있지만, 외부 API 호출 전에 `orderId`를 선점하지 않기 때문에 외부 바우처 API가 중복 호출될 수 있습니다.
-
-## 따닥 결제 재현
-
-애플리케이션 실행 후 아래 스크립트를 실행합니다.
+### 3. 테스트
 
 ```bash
-bash scripts/run-duplicate-payment-test.sh AL-DUPLICATE-001
+./gradlew clean test
+./gradlew build
 ```
 
-그 다음 mock 외부 바우처 테이블을 확인합니다.
+## 주요 API
+
+| 기능 | Method | Endpoint |
+| --- | --- | --- |
+| Legacy 포인트 결제 | POST | `/api/payments/point/legacy` |
+| Redis+DB 멱등 결제 | POST | `/api/payments/point/redis-idempotent` |
+| Legacy 포인트 환불 | POST | `/api/refunds/point/legacy` |
+| 지갑·포인트 요약 | GET | `/api/point-wallets/{pointWalletUid}/summary` |
+| 구매 내역 | GET | `/api/voucher-purchases` |
+| 바우처 상품 등록 | POST | `/api/admin/voucher-products` |
+| 바우처 상품 조회 | GET | `/api/admin/voucher-products` |
+| 외부 쿠폰 발행 | POST | `/mock/voucher-provider/vouchers/issue` |
+| 외부 쿠폰 취소 | POST | `/mock/voucher-provider/vouchers/cancel` |
+| 외부 쿠폰 조회 | GET | `/mock/voucher-provider/vouchers` |
+
+Redis 멱등 결제 API에는 `Idempotency-Key` 헤더가 필요합니다. 전체 요청 예시는
+[`http/payment-lab.http`](http/payment-lab.http)에서 확인할 수 있습니다.
+
+## 재현 및 검증 스크립트
 
 ```bash
-docker exec -it point-payment-lab-mysql mysql -ulab -plab point_payment_lab \
-  -e "select id, order_id, voucher_number, status from provider_voucher where order_id='AL-DUPLICATE-001';"
+# Legacy 동일 주문 중복 결제 재현
+bash scripts/run-duplicate-payment-test.sh ORDER-DUPLICATE-001
+
+# payment_attempt 기반 멱등성 검증
+bash scripts/run-idempotent-payment-test.sh ORDER-IDEMPOTENT-001
+
+# 외부 발행사 orderId 멱등성 검증
+bash scripts/run-duplicate-provider-issue-test.sh PROVIDER-IDEMPOTENT-001
+
+# Redis+DB 멱등성 검증
+bash scripts/run-redis-idempotent-payment-test.sh ORDER-REDIS-001
+
+# 서로 다른 주문의 동일 잔액 경쟁 검증
+bash scripts/run-competing-balance-test.sh ORDER-BALANCE-RACE-001
 ```
 
-기대하는 관찰 포인트:
+상세 결과:
 
-- 프론트 버튼 방어가 없는 API 직접 호출에서는 같은 `orderId` 요청이 동시에 들어올 수 있습니다.
-- API 서버가 외부 API 호출 전에 `orderId`를 선점하지 않으므로 mock 바우처 발행 API가 두 번 호출될 수 있습니다.
-- DB의 `voucher_purchase.order_id` unique 제약 때문에 내부 구매 이력은 하나만 성공합니다.
-- 그러나 `provider_voucher`에는 같은 `order_id`로 발행된 바우처 호출 흔적이 둘 이상 남을 수 있습니다.
+- [Redis+DB 멱등성 구현 결과](docs/redis-payment-idempotency-result.md)
+- [조건부 잔액 차감 결과](docs/conditional-point-balance-debit-result.md)
+- [API 흐름도 해설](docs/payment-api-flow-diagram-explanation.md)
+- [테이블 설계](docs/table-design.md)
+- [현재 작업 현황과 TODO](docs/worklog-and-todo.md)
 
-이 상태가 이후 `PaymentAttempt` 테이블과 API 서버 멱등성 처리로 개선할 대상입니다.
+## 공개 데이터 안내
 
-## 향후 개선해야할 문제점
+`evidence`에 포함된 주문번호, 쿠폰 번호와 PIN은 실제 고객 또는 외부 업체 데이터가
+아니라 이 프로젝트의 Provider Mock이 생성한 합성 테스트 데이터입니다. 실제 회사
+시스템 분석과 면접 메모가 포함된 로컬 문서는 `.gitignore`로 제외되어 있습니다.
 
-### 1. 외부 API 호출 전 중복 요청 선점 필요
+## 남은 과제
 
-현재 legacy 구현은 외부 바우처 발행 API를 먼저 호출하고, 그 뒤 내부 DB transaction에서 `voucher_purchase.order_id`를 저장합니다.
-
-그래서 같은 `orderId` 요청이 거의 동시에 두 번 들어오면 다음 문제가 생길 수 있습니다.
-
-```text
-요청 A -> 외부 바우처 발행 성공 -> 내부 DB 저장 성공
-요청 B -> 외부 바우처 발행 성공 -> 내부 DB 저장 실패(order_id unique 위반)
-```
-
-내부 DB 중복 저장은 막히지만, 외부 바우처 발행 API는 이미 두 번 호출될 수 있습니다. 개선하려면 외부 API 호출 전에 `PaymentAttempt` 같은 테이블에 `orderId`를 먼저 저장해 요청을 선점해야 합니다.
-
-### 2. API 서버 레벨 멱등성 처리 필요
-
-DB unique 제약은 마지막 방어선입니다. API 서버에서도 같은 `orderId`나 `Idempotency-Key`에 대해 이미 처리 중인지, 성공했는지, 실패했는지 구분해야 합니다.
-
-개선 방향은 다음과 같습니다.
-
-- `orderId` 또는 `idempotencyKey`를 먼저 저장
-- 상태를 `PROCESSING`, `SUCCESS`, `FAILED` 등으로 관리
-- 같은 요청이 다시 들어오면 외부 API를 재호출하지 않고 기존 처리 결과를 반환
-- 처리 중인 요청이면 409 또는 별도 응답으로 중복 진행을 막음
-
-### 3. 외부 API 타임아웃/무응답 처리 필요
-
-현재 mock 구현은 정상 응답 중심입니다. 실제 외부 API는 다음 상황이 발생할 수 있습니다.
-
-- 요청은 성공했지만 응답이 오지 않음
-- 네트워크 타임아웃 발생
-- 외부 시스템은 발행 성공, 내부 서버는 실패로 판단
-- 같은 요청 재시도로 바우처가 중복 발행됨
-
-개선하려면 외부 API에 전달하는 거래 식별자를 멱등키로 사용하고, 타임아웃 시 바로 재발행하지 말고 상태 조회 API 또는 보상 처리 흐름을 둬야 합니다.
-
-### 4. 환불 transaction 경계 개선 필요
-
-현재 환불은 내부 DB transaction을 먼저 성공시킨 뒤 외부 바우처 취소 API를 호출합니다.
-
-이 구조에서는 외부 취소 API가 실패하면 내부 DB는 환불 완료인데 외부 바우처는 취소되지 않은 불일치가 생길 수 있습니다.
-
-개선 방향은 다음과 같습니다.
-
-- 환불 요청 상태 테이블 추가
-- 환불 상태를 `REQUESTED`, `CANCELING_PROVIDER`, `REFUNDED`, `FAILED`로 관리
-- 외부 취소 성공 후 내부 포인트 복구
-- 또는 내부 상태를 pending으로 둔 뒤 외부 취소 성공 이벤트/재시도 작업으로 최종 확정
-
-### 5. 포인트 부족 검증 순서 개선 필요
-
-현재 구현은 사용 가능한 포인트 묶음을 순회하며 차감한 뒤, 사용량이 요청 포인트보다 적으면 예외를 던집니다. transaction으로 내부 변경은 롤백되지만, 외부 바우처는 이미 발행된 뒤입니다.
-
-개선하려면 외부 바우처 발행 전에 다음 검증을 먼저 끝내야 합니다.
-
-- 총 잔액이 충분한지 확인
-- 사용 가능한 `point_lot` 합계가 충분한지 확인
-- 상품 가격과 요청 포인트가 일치하는지 확인
-- 만료된 포인트가 포함되지 않았는지 확인
-
-### 6. 동시성 제어 보강 필요
-
-같은 사용자가 동시에 여러 결제를 시도하면 포인트 잔액과 포인트 묶음을 동시에 차감하려는 경쟁 상태가 생길 수 있습니다.
-
-개선 방향은 다음과 같습니다.
-
-- `point_balance` 또는 결제 시 사용할 포인트 묶음에 row lock 적용
-- 낙관적 락 버전 컬럼 추가
-- 잔액 차감 SQL을 조건부 update로 처리
-- 차감 전후 잔액 검증 강화
-
-### 7. 실패 보상과 재처리 작업 필요
-
-결제/환불은 내부 DB와 외부 API가 함께 움직이기 때문에 한쪽만 성공하는 상태가 생길 수 있습니다.
-
-현재 결제 legacy 구현은 외부 바우처 발행 성공 후 내부 DB transaction이 실패하면 `voucherProviderClient.cancel()`로 외부 취소 API를 호출합니다. 하지만 이 취소 API도 외부 API이므로 실패하거나 타임아웃될 수 있습니다. 따라서 "취소 API를 호출했다"만으로 보상 처리가 완전히 끝났다고 볼 수 없습니다.
-
-개선하려면 다음 같은 운영성 장치가 필요합니다.
-
-- 외부 발행 성공, 내부 DB 실패 시 취소 재시도 작업
-- 외부 취소 API 실패/타임아웃 시 실패 이력 저장
-- 내부 환불 성공, 외부 취소 실패 시 취소 재시도 작업
-- 실패 상태를 남기는 outbox 또는 retry 테이블
-- 관리자 확인용 실패 이력 조회 API
-# point-payment-lab
+- 외부 쿠폰 발행 전 포인트 예약으로 경쟁 실패분의 불필요한 발행·취소 제거
+- 외부 취소 실패를 영속화하고 재시도하는 Outbox·reconciliation
+- 쿠폰 사용(Redemption) 도메인과 사용 취소 흐름
+- Redis HA·TLS·관측성과 Testcontainers 기반 동시성 회귀 테스트

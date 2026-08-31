@@ -1,5 +1,8 @@
 # Redis + DB 결제 멱등성 설계
 
+> 2026-08-30 구현과 검증을 완료했다. 실제 코드 흐름과 두 인스턴스·장애 검증
+> 결과는 `docs/redis-payment-idempotency-result.md`에서 확인한다.
+
 ## 목적
 
 결제 요청이 네트워크 타임아웃, 클라이언트 재시도, 사용자의 연속 클릭으로
@@ -420,20 +423,23 @@ provider orderId unique
 | 앱 서버 중단, DB가 PROCESSING | timeout/reconciliation 대상으로 관리 |
 | 같은 키, 다른 payload | DB 또는 cache의 request hash 비교 후 422 |
 
-## 구현 단계
+## 구현 단계 및 상태
 
-1. 현재 2차·3차 개선을 먼저 커밋한다.
-2. Docker Compose에 localhost 바인딩 Redis를 추가한다.
-3. Redis/Redisson 설정을 환경변수화한다.
-4. 새 `/redis-idempotent` API에서 `Idempotency-Key`를 필수로 받는다.
-5. DB migration으로 멱등키 범위, request hash, 최초 status/body를 저장한다.
-6. DB-only 경로에서 최초 응답을 정확하게 replay하도록 먼저 완성한다.
-7. Redis 결과 cache를 추가한다.
-8. Redisson 분산락과 lock 후 double check를 추가한다.
-9. Redis 장애 fallback을 구현한다.
-10. 8081과 8082 인스턴스에서 같은 키를 동시에 호출한다.
-11. Redis 정상·중단·cache 만료·앱 중단 시나리오를 검증한다.
-12. DB-only와 Redis+DB의 외부 호출 수, DB 충돌 수, 응답 시간을 비교한다.
+1. [x] 현재 2차·3차 개선을 먼저 커밋한다.
+2. [x] Docker Compose에 localhost 바인딩 Redis를 추가한다.
+3. [x] Redis/Redisson 설정을 환경변수화한다.
+4. [x] 새 `/redis-idempotent` API에서 `Idempotency-Key`를 필수로 받는다.
+5. [x] DB migration으로 멱등키 범위, request hash, 최초 status/body를 저장한다.
+6. [x] DB fallback 경로에서 최초 응답을 정확하게 replay한다.
+7. [x] Redis 결과 cache를 추가한다.
+8. [x] Redisson 분산락과 lock 후 double check를 추가한다.
+9. [x] Redis 장애 fallback을 구현한다.
+10. [x] 8080과 8081 인스턴스에서 같은 키를 동시에 호출한다.
+11. [x] Redis 정상·중단·cache miss·재시작 시나리오를 검증한다.
+12. [x] DB-only와 Redis+DB의 외부 호출 수, DB 충돌 수, 응답 시간을 비교한다.
+
+비교 결과는 `docs/redis-payment-idempotency-result.md`와
+`evidence/redis-idempotency/benchmark/`에 기록했다.
 
 ## 완료 조건
 

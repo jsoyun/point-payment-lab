@@ -20,12 +20,6 @@
 > Redis·Redisson 분산 조율과 결과 캐시까지 단계적으로 개선하고 장애 상황의
 > DB fallback을 검증한 프로젝트다.
 
-Redis 구현이 완료되기 전에는 마지막 문장을 다음처럼 사용한다.
-
-> Legacy 포인트 결제의 중복 발행과 MySQL Deadlock을 재현하고 DB 기반
-> 멱등성으로 개선했으며, Redis·Redisson을 이용한 다중 서버 멱등성 확장을
-> 설계하고 구현 중인 프로젝트다.
-
 ## 프로젝트에서 보여줄 핵심 역량
 
 1. Legacy 코드를 바로 교체하지 않고 문제를 재현 가능한 baseline으로 보존했다.
@@ -104,8 +98,8 @@ Legacy 흐름은 포인트가 부족해도 외부 쿠폰을 먼저 발행하고 
 ```
 
 다만 사전 조회와 실제 차감 사이에는 다른 주문이 잔액을 먼저 사용할 수
-있는 TOCTOU 경쟁이 남아 있다. 이는 Redis 분산락과 다른 문제이며, 향후
-조건부 UPDATE 또는 DB row lock으로 해결한다.
+있는 TOCTOU 경쟁이 남아 있었다. 이는 Redis 분산락과 다른 문제이므로 이후
+`balance >= amount` 조건부 UPDATE로 별도 해결했다.
 
 ## 이야기 5. DB-only 멱등성의 역할과 한계를 확인했다
 
@@ -118,9 +112,9 @@ Legacy 흐름은 포인트가 부족해도 외부 쿠폰을 먼저 발행하고 
 변경된 message를 반환한다. 목표 멱등성은 실행이 한 번이라는 조건뿐 아니라
 최초 status와 body를 동일하게 재사용하는 것이다.
 
-## 이야기 6. Redis를 정확성 대체재가 아닌 분산 조율 계층으로 추가한다
+## 이야기 6. Redis를 정확성 대체재가 아닌 분산 조율 계층으로 추가했다
 
-Redis 단계에서 구현할 핵심은 다음과 같다.
+Redis 단계에서 구현한 핵심은 다음과 같다.
 
 ```text
 Idempotency-Key + request hash
@@ -144,23 +138,53 @@ Idempotency-Key + request hash
 | `provider_voucher` unique | 외부 쿠폰 중복 발행의 최종 방어 |
 | 조건부 UPDATE/row lock | 서로 다른 주문의 동일 잔액 경쟁 방어 |
 
+## 이야기 7. 서로 다른 주문의 잔액 경쟁은 조건부 UPDATE로 막았다
+
+서로 다른 주문과 멱등키 두 건은 서로 다른 Redis lock을 사용한다. 따라서 마지막
+5,000점을 두 요청이 동시에 읽으면 둘 다 사전 검증을 통과할 수 있다. 잔액 확인과
+차감을 다음 한 SQL로 합쳤다.
+
+```sql
+update point_balance
+set balance = balance - :amount
+where id = :id and balance >= :amount;
+```
+
+실제 5,000점에 5,000점 결제 두 건을 동시에 보내자 한 건은 HTTP 201, 다른 한
+건은 HTTP 409가 됐다. 최종 잔액은 0, 구매는 1건이었다. 이는 Redis가 같은 요청의
+중복 실행을 담당하고, DB 조건부 UPDATE가 서로 다른 결제의 자원 경쟁을 담당하는
+역할 분리를 보여준다.
+
+경쟁에서 진 요청도 외부 쿠폰 발행 후 보상 취소되므로 외부 호출 비용은 남는다.
+이 문제는 포인트 예약과 보상 재시도 설계의 후속 과제로 구분한다.
+
 ## Redis 단계 완료 조건
 
 아래 항목을 모두 실제 결과로 남긴 후 Redis 구현을 포트폴리오의 완료
 성과로 표현한다.
 
-- [ ] Docker Compose Redis와 Redisson 연결
-- [ ] `Idempotency-Key`와 request SHA-256 hash
-- [ ] 같은 키·다른 payload 거절
-- [ ] Redis 결과 캐시
-- [ ] Redisson 분산락과 lock 획득 후 double check
-- [ ] 최초 HTTP status/body DB 저장 및 정확한 replay
-- [ ] Spring Boot 2개 인스턴스의 동일 요청 동시 테스트
-- [ ] 실제 외부 발행 1건, 내부 구매 1건 확인
-- [ ] 캐시 TTL 만료 후 DB 결과 복구와 cache 재생성
-- [ ] Redis 중지 시 DB 기반 멱등성 fallback
-- [ ] Redis 정상/장애의 응답과 DB 증거 저장
-- [ ] DB-only와 Redis+DB 비교표 작성
+- [x] Docker Compose Redis와 Redisson 연결
+- [x] `Idempotency-Key`와 request SHA-256 hash
+- [x] 같은 키·다른 payload 거절
+- [x] Redis 결과 캐시
+- [x] Redisson 분산락과 lock 획득 후 double check
+- [x] 최초 HTTP status/body DB 저장 및 정확한 replay
+- [x] Spring Boot 2개 인스턴스의 동일 요청 동시 테스트
+- [x] 실제 외부 발행 1건, 내부 구매 1건 확인
+- [x] 캐시 삭제 후 DB 결과 복구와 cache 재생성
+- [x] Redis 중지 시 DB 기반 멱등성 fallback
+- [x] Redis 정상/장애의 응답과 DB 증거 저장
+- [x] DB-only와 Redis+DB 비교표 작성
+
+완료 재요청 100회 로컬 비교 결과:
+
+| 방식 | 평균 응답 시간 | MySQL SELECT | MySQL INSERT 시도 |
+| --- | ---: | ---: | ---: |
+| DB-only | 8.118ms | 101 | 100 |
+| Redis+DB cache hit | 2.588ms | 1 | 0 |
+
+두 방식 모두 외부 발행과 내부 구매는 주문별 1건을 유지했다. 이 수치는 로컬
+순차 호출의 방향성 비교이며 운영 처리량으로 일반화하지 않는다.
 
 ## 포트폴리오에서 보여줄 최종 검증 시나리오
 
@@ -211,15 +235,13 @@ Redis 중지
 - 외부 발행사의 `order_id` unique와 기존 결과 replay
 - 가격·총잔액·미만료 lot 사전 검증
 - API 응답과 DB evidence 수집
-
-### Redis 브랜치에서 구현할 범위
-
 - Redis·Redisson 분산락
 - 결과 캐시
 - `Idempotency-Key`와 request hash
 - 최초 응답의 정확한 replay
 - 두 인스턴스 검증
 - Redis 장애와 TTL 만료 시 DB fallback
+- 조건부 UPDATE 기반 동일 잔액 중복 차감 방어
 
 ### 이번 포트폴리오 범위에서 제외
 
@@ -234,12 +256,11 @@ Redis 중지
 
 ## 최종 결과 문장 템플릿
 
-Redis 구현과 검증 후 실제 수치를 채운다.
-
 > DB-only 방식에서는 동일 요청을 `payment_attempt` unique로 차단해 외부 발행을
 > 2건에서 1건으로 줄이고 Deadlock을 제거했다. 이후 Redis·Redisson을 추가해
 > 두 애플리케이션 인스턴스의 동일 멱등 요청을 한 실행으로 조율하고, 완료
-> 재요청은 `[측정값]ms`에 최초 응답을 replay했다. Redis 장애와 캐시 TTL 만료
+> 재요청 100회에서 평균 응답 시간을 8.118ms에서 2.588ms로 줄이며 최초 HTTP
+> 201과 JSON body를 그대로 replay했다. Redis 장애와 캐시 만료
 > 상황에서도 MySQL 기록으로 결과를 복구해 외부 발행과 내부 구매가 각각
 > 한 건으로 유지됨을 검증했다.
 

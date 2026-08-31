@@ -32,9 +32,9 @@ diagrams.net의 `결제프로젝트` 파일에 다음 두 페이지를 작성했
   - 외부 발행 최초 HTTP 201, 같은 요청 HTTP 200 replay, 다른 상품 HTTP 409
 - `06-3차 외부 호출 전 검증 API 흐름`
   - 가격·잔액·미만료 lot 검증과 실패 시 외부 호출 없는 HTTP 422
-- `07-4차 Redis 분산락 API 흐름 (설계안)`
-  - Redis/Redisson, DB 이중 확인, 조건부 잔액 차감, 원본 응답 캐시의 목표 요청 흐름
-  - 아직 구현하지 않은 설계임을 페이지 제목과 본문에 명시
+- `07-4차 Redis+DB 멱등성 API 흐름 (구현 완료)`
+  - Redis/Redisson, DB 이중 확인, 조건부 잔액 차감, 원본 응답 캐시의 실제 요청 흐름
+  - 2개 인스턴스, Redis 장애 fallback, 성능 비교, 동일 잔액 경쟁의 실제 검증 결과
 
 다이어그램 링크, 페이지 설명, 색상 범례와 근거 자료:
 
@@ -102,6 +102,262 @@ A4 가로형 포트폴리오 목차와 페이지별 개요를 작성했다.
 이번 제출 범위에서는 보상 취소 outbox, Redemption, `limited_deal`을 제외한다.
 서로 다른 주문의 동일 잔액 경쟁은 Redis 멱등키와 다른 문제임을 문서에
 명시하고 조건부 UPDATE 또는 row lock을 후속 개선으로 둔다.
+
+## 2026-08-30 Redis + DB 결제 멱등성 구현 및 검증 완료
+
+`improve/redis-idempotency` 브랜치에서 Redis를 DB의 대체재가 아닌 분산 조율·결과
+캐시 계층으로 추가했다. 상세 구현과 실제 검증 결과는 다음 문서를 기준으로 본다.
+
+- 구현 결과: `docs/redis-payment-idempotency-result.md`
+- 설계 배경: `docs/redis-payment-idempotency-design.md`
+- HTTP 증거: `evidence/redis-idempotency/`
+
+완료한 핵심 내용:
+
+- `POST /api/payments/point/redis-idempotent`와 필수 `Idempotency-Key` 헤더
+- client/method/path/key 범위와 SHA-256 request hash
+- Redisson `RLock` 분산락, lock 획득 후 Redis·DB double check
+- 최초 HTTP status/body의 MySQL 저장과 Redis TTL 결과 캐시
+- 같은 키·다른 payload의 HTTP 422 거절
+- Redis 장애와 cache miss 시 `payment_attempt` 기반 fallback 및 cache 재생성
+- 8080·8081 두 Spring Boot 인스턴스 동시 호출 검증
+
+실제 결과:
+
+```text
+최초 실행: HTTP 201, Idempotency-Replayed=false, DATABASE_CREATED
+동시 요청: HTTP 201, Idempotency-Replayed=true, REDIS_CACHE
+외부 provider_voucher: 1건
+내부 voucher_purchase: 1건
+cache 삭제 후: HTTP 201, DATABASE_CACHE_REBUILD, 최초 body 그대로
+Redis 중지 후: HTTP 201, DATABASE_REPLAY, 최초 body 그대로
+같은 키·다른 payload: HTTP 422 IDEMPOTENCY_KEY_REUSED
+```
+
+다음 우선순위:
+
+1. 포트폴리오 PDF의 공개 정보와 표현을 최종 검토한다.
+2. Redis·조건부 UPDATE 구현, evidence, 문서와 PDF를 하나의 커밋으로 정리한다.
+3. 필요하면 지원서 첨부용 1페이지 요약 PDF를 추가한다.
+
+### 문제–개선 중심 15페이지 백엔드 포트폴리오 PDF 재구성 완료
+
+기능과 기술을 나열하던 기존 18페이지 구성을 걷어내고, 현재 구현과 실제 evidence를
+기준으로 API 요청·응답 흐름의 변화가 먼저 보이는 A4 가로형 포트폴리오로 재구성했다.
+
+- 결과: `output/pdf/point-payment-lab-portfolio.pdf`
+- 생성 스크립트: `scripts/generate-problem-improvement-portfolio-pdf.py`
+- 페이지 구성 문서: `docs/problem-improvement-portfolio-flow.md`
+- 분량: 15페이지
+- 표지 다음에 프로젝트 목적과 `Client`, `Shopping API`, `Application`, `MySQL`,
+  `외부 쿠폰 발행사 (Provider Mock)`의 의미·책임·시스템 경계를 설명하는 입문 페이지 추가
+- 공통 서사: `기존 API 흐름 → 문제 발생 지점 → 수정한 코드·데이터 → 개선 후 응답 → 달라진 이유`
+- 각 개선 페이지의 고정 항목: `기존 문제점`, `수정한 부분`, `개선된 결과`, `달라진 이유`
+- 개선 단계: `payment_attempt` 선점, provider 멱등성, 외부 호출 전 검증,
+  Redis+DB 멱등성, 장애 fallback, 조건부 UPDATE
+
+기존 구성안의 “Redis 구현 예정” 내용을 현재 완료 상태로 바꾸고 다음 실제
+수치를 반영했다.
+
+- 두 인스턴스 동시 요청: 외부 발행 1건, 내부 구매 1건, 동일 HTTP 201/body
+- Redis 중지: MySQL 기반 `DATABASE_REPLAY`
+- 완료 재요청 100회: DB-only 8.118ms, Redis+DB 2.588ms
+- 서로 다른 주문의 동일 잔액 경쟁: HTTP 201/409, 구매 1건, 중복 차감 0
+
+PDF 생성 후 15페이지를 PNG로 렌더링해 전체 흐름, 카드 경계, 시퀀스 다이어그램과
+색상 일관성을 시각 검수했다. 최종본은 표지의 네이비·블루·퍼플·그린만 사용하며,
+카드 안의 글자가 배경 영역을 벗어나지 않도록 자동 맞춤을 적용했다.
+
+포트폴리오를 처음 읽는 사람도 한 문장만으로 의미를 파악할 수 있도록 전체 문구를
+다시 점검했다. 특히 `issue`, `cancel`, `replay`, `fallback`, `unique`,
+`stale balance`, `single-flight`처럼 설명 없이 사용된 용어를 다음처럼 바꿨다.
+
+- 외부 issue → 외부 쿠폰 발행 API 호출
+- cancel 보상 → 실패한 외부 쿠폰을 취소하는 API 호출
+- exact replay → 최초 HTTP 상태 코드와 응답 본문을 그대로 반환
+- DB fallback → Redis 장애 시 MySQL에 저장한 최초 응답으로 복구
+- provider unique → 외부 발행사 DB에서 같은 orderId의 중복 저장 방지
+- stale balance 경쟁 → 두 요청이 차감 전 같은 잔액을 읽는 경쟁
+
+시스템 참여자 표기는 업무 역할이 먼저 보이도록 통일했다. 최초 소개 페이지에는
+`외부 쿠폰 발행사 (Provider Mock)`로 구현 방식을 함께 밝히고, 이후 API 흐름도와
+설명에는 `외부 발행사` 또는 `외부 쿠폰 발행사`를 사용한다. 실제 구현·DB 증거를
+가리키는 `provider_voucher` 테이블명은 그대로 유지한다.
+
+1차 개선 다이어그램의 `unique 승자` 표현은 unique 제약 자체를 선점하는 것처럼
+보일 수 있어 수정했다. 실제 동작에 맞춰 `orderId 선점 성공 / 중복 저장 충돌`로
+표시하고, 같은 orderId를 `payment_attempt`에 먼저 저장한 요청만 실제 결제를
+실행한다고 설명한다. unique 제약은 선점 대상이 아니라 한 요청만 저장에 성공하게
+보장하는 DB 방어 장치다.
+
+같은 페이지의 `PROCESSING INSERT + flush`도 처음 보는 사람이 이해할 수 있도록
+`PROCESSING 상태를 DB에 즉시 저장`으로 바꿨다. 수정 설명에는
+`saveAndFlush`가 INSERT SQL 실행 시점을 앞당겨 외부 호출 전에 orderId 선점
+성공 또는 중복 충돌을 확인한다는 내용을 추가했다. `flush`는 commit이 아니며,
+SQL을 DB로 보내 제약조건을 확인하는 시점만 앞당긴다는 설명을 발표 대본에도
+반영했다.
+
+포트폴리오의 페이지 제목이 추상적이고 사용 기술이 한눈에 보이지 않는 문제를
+수정했다. 공통 제목 크기를 22pt에서 18.5pt로 줄이고, 각 제목에 실제 구현 기술과
+개선 대상을 포함했다. 3페이지는 읽기 안내에서 기술 스택·단계별 구현 지도로
+재구성했다.
+
+- Backend: Java 17, Spring Boot, Spring Data JPA, TransactionTemplate
+- Data: MySQL 8, Flyway
+- Concurrency: DB unique, saveAndFlush, Redisson RLock, 조건부 UPDATE
+- Infra/검증: Docker Compose, Redis, curl 병렬 스크립트, 두 인스턴스 검증
+- Redis 도입 이유: 여러 서버가 동시 실행 상태와 완료 결과를 공유하고, cache hit에서
+  DB 중복 INSERT·SELECT를 줄이기 위해 사용
+- Redis 장애 대비: 최초 HTTP status/body는 MySQL payment_attempt에 영구 저장
+
+4~15페이지 제목도 `문제 재현`, `payment_attempt unique + saveAndFlush`,
+`provider_voucher orderId unique`, `point_balance·point_lot 검증`, `Redisson
+RLock + Redis cache`, `조건부 UPDATE`, 실제 검증 수치가 바로 드러나도록 변경했다.
+
+`saveAndFlush` 사용 이유도 선점 기능 자체로 오해하지 않도록 표현을 보완했다.
+orderId 처리권 선점은 `payment_attempt.orderId` unique 제약으로 한 요청만 INSERT에
+성공하게 만드는 설계가 담당한다. `saveAndFlush`는 INSERT SQL과 unique 충돌 확인
+시점을 외부 쿠폰 발행보다 앞으로 당기는 역할이며, flush는 commit이 아니라 SQL
+실행 시점만 앞당긴다는 내용을 PDF와 발표 대본에 반영했다.
+
+## 2026-08-31 GitHub 공개 전 안전성 점검
+
+이력서에 GitHub 링크를 공개하기 전에 저장소의 비공개 정보와 이식성을 점검했다.
+
+- `docs/legacy-point-payment-interview-notes.md`는 `.gitignore`로 정상 제외
+- `.env`, 비밀키, API token, Authorization/Cookie 값이 추적 파일에 없는지 확인
+- `application.yml`과 Docker Compose의 비밀번호는 로컬 기본값이며 환경변수로 재정의 가능
+- evidence의 쿠폰 번호와 PIN은 Provider Mock이 생성한 합성 테스트 데이터
+- evidence 약 192KB, 포트폴리오 PDF 약 184KB로 저장소 공개에 무리가 없는 크기
+- `build.gradle`에 남아 있던 이전 회사명 계열 group을 `com.paymentlab`으로 변경
+- PDF 생성기의 사용자 절대 글꼴 경로를 `Path.home()`과
+  `PORTFOLIO_BOLD_FONT` 환경변수 기반으로 변경하고 fallback 추가
+
+다음 공개 준비 순서는 테스트·빌드 검증, 생성 파일 정리, README 개선, 커밋·push다.
+
+공개 준비 검증 결과:
+
+- `./gradlew clean test`: 성공
+- `./gradlew build`: 성공, Spring Boot JAR 생성 확인
+- Gradle 9 호환성 관련 deprecated feature 경고는 후속 정리 대상
+- `.gradle`, `.idea`, `build`, 로그와 로컬 비공개 문서는 Git 추적에서 제외
+- evidence와 PDF는 작은 용량이며 재현·검증 근거이므로 공개 추적 대상으로 유지
+
+README를 Redis 구현 전 설명에서 현재 완료 상태를 보여주는 포트폴리오 진입점으로
+전면 개편했다. 포트폴리오 PDF 링크, 개선 전후 수치, 1~5차 구현, Redis를 사용한
+이유와 MySQL fallback, 기술 스택, 실행·테스트·재현 명령, 공개 데이터 안내와 남은
+과제를 포함했다.
+
+Legacy 흐름의 핵심 문장은 다음과 같이 명확하게 수정했다.
+
+> 내부 결제 트랜잭션이 rollback되더라도, 외부 쿠폰 발행사에서 이미 발급한
+> 쿠폰은 자동으로 취소되지 않는다.
+
+재생성 명령:
+
+```bash
+PYTHONPATH=/tmp/point-payment-lab-pdf-libs \
+  python3 scripts/generate-problem-improvement-portfolio-pdf.py
+```
+
+현재 스크립트는 ReportLab과 로컬 한글 글꼴을 사용한다. 다른 개발 환경에서도
+재현하려면 의존성 설치 방법과 저장소 내 공개 가능한 한글 글꼴 또는 fallback
+설정을 후속으로 정리해야 한다.
+
+### 포트폴리오 색상·카드 UI 개선 및 발표 대본 작성
+
+표지에서 사용한 네이비·블루·퍼플·그린 계열만 18페이지 전체 강조 색상으로
+사용하도록 통일했다. 기존 빨강과 주황 계열은 각각 퍼플과 블루 계열로 바꿨다.
+
+카드 UI는 높이에 따라 제목·본문을 자동 배치하도록 생성 함수를 개선했다.
+
+- 낮은 안내 바: 제목과 본문을 가로로 배치
+- 일반 카드: 제목 줄 수에 따라 본문 시작 위치 계산
+- 본문이 길면 카드 높이 안에서 글자 크기와 줄 간격 자동 축소
+- 4페이지 오른쪽 도형과 하단 카드를 A4 안전 여백 안으로 재배치
+
+최종 PDF는 15페이지 PNG 렌더링, 텍스트 누락·깨짐, 페이지 경계 밖 글자 여부를
+다시 검증했다.
+
+페이지별 발표 대본:
+
+- `docs/portfolio-presentation-script.md`
+- 현재 15페이지별 핵심 메시지, 기본 대본, 전환 문장과 주요 예상 질문
+- 6페이지에 `save`, `saveAndFlush`, `flush`, `commit`, `rollback`의 차이와
+  외부 호출 전 unique 충돌을 확인해야 하는 이유를 상세히 설명
+- 면접용 1분 전체 요약 답변 포함
+
+### Redis+DB API 흐름 다이어그램 갱신 완료
+
+diagrams.net `결제프로젝트`의 07페이지를 설계안에서 구현 결과로 갱신했다.
+
+- 변경 전: `07-4차 Redis 분산락 API 흐름 (설계안)`
+- 변경 후: `07-4차 Redis+DB 멱등성 API 흐름 (구현 완료)`
+- 반영 내용: Redisson 분산락, 결과 cache, `payment_attempt` 최초 status/body,
+  Redis 장애 DB fallback, 조건부 잔액 UPDATE
+- 반영 수치: 두 인스턴스 외부 발행·구매 각 1건, 완료 재요청 평균
+  8.118ms→2.588ms, Redis 중지 시 HTTP 201 replay, 잔액 경쟁 HTTP 201/409
+
+해설 문서와 다이어그램 가이드도 실제 구현 상태로 함께 갱신했다.
+
+### 조건부 UPDATE 기반 동일 잔액 경쟁 개선 완료
+
+서로 다른 `orderId`와 멱등키가 같은 5,000점 잔액을 동시에 사용할 때 Redis
+멱등키 lock이 막지 못하는 경쟁을 MySQL 조건부 UPDATE로 개선했다.
+
+- 상세 결과: `docs/conditional-point-balance-debit-result.md`
+- 재현 스크립트: `scripts/run-competing-balance-test.sh`
+- 실제 증거: `evidence/conditional-balance-debit/`
+
+```text
+update point_balance
+set balance = balance - 5000
+where id = 1 and balance >= 5000
+```
+
+실제 동시 요청 결과:
+
+```text
+서로 다른 주문 A/B, 서로 다른 Idempotency-Key, 시작 잔액 5,000
+요청 A: HTTP 409 POINT_BALANCE_CONFLICT
+요청 B: HTTP 201 DATABASE_CREATED
+최종 잔액: 0
+내부 구매: 1건
+외부 바우처: ISSUED 1건 + 경쟁 실패분 CANCELED 1건
+```
+
+조건부 UPDATE의 affected rows가 1인 요청만 lot/source/ledger/purchase 처리를
+계속한다. 0인 요청은 다른 결제가 잔액을 먼저 사용했거나 잔액이 부족한 것으로
+판단한다. 기존 `/legacy`는 문제 재현용으로 그대로 두고 Redis+DB 결제 경로에만
+적용했다.
+
+남은 한계: legacy `balance` 컬럼이 `varchar`이므로 현재 MySQL SQL에서 숫자
+CAST가 필요하다. 운영형 스키마에서는 `BIGINT` 또는 `DECIMAL` migration이
+필요하다. 또한 경쟁 실패 요청도 사전 검증 후 외부 발행까지 수행하므로 보상
+취소 1회가 발생한다. 외부 부작용까지 제거하려면 포인트 예약 상태와 복구 흐름을
+별도로 설계해야 한다.
+
+### DB-only와 Redis+DB 완료 재요청 비교
+
+`scripts/benchmark-payment-idempotency.sh`로 이미 완료된 동일 결제를 각 방식에
+100회 순차 재요청했다. 실제 결과는
+`evidence/redis-idempotency/benchmark/summary.csv`에 보관한다.
+
+| 방식 | 평균 | 최소 | 최대 | MySQL SELECT | MySQL INSERT 시도 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| DB-only | 8.118ms | 5.851ms | 22.226ms | 101 | 100 |
+| Redis+DB | 2.588ms | 1.911ms | 4.248ms | 1 | 0 |
+
+- Redis cache hit의 평균 응답 시간은 이 로컬 실험에서 약 68.1% 짧았다.
+- DB-only는 재요청마다 `payment_attempt` INSERT 선점 후 unique 충돌을 처리하고
+  기존 행을 SELECT하므로 INSERT 시도와 DB 조회가 반복됐다.
+- Redis+DB는 warm cache에서 결과를 바로 반환해 애플리케이션 결제 경로의 DB
+  접근이 발생하지 않았다. 관찰된 SELECT 1회는 MySQL global counter 기준의
+  환경 잡음을 포함할 수 있다.
+- 두 방식 모두 100회 재요청 후 `provider_voucher`와 `voucher_purchase`가 각각
+  1건으로 유지돼 추가 외부 발행과 내부 구매는 없었다.
+- 로컬 단일 서버·순차 요청·JPA SQL 로그 활성화 상태의 소규모 비교이므로 운영
+  처리량 수치로 일반화하지 않고, cache hit 경로의 방향성 증거로만 사용한다.
 
 ## 현재 최우선 작업: legacy 문제 재현 후 개선 전후 비교
 
@@ -545,20 +801,20 @@ Redis 사용 실패
 
 구현 TODO:
 
-- [ ] Docker Compose에 Redis를 localhost 바인딩으로 추가
-- [ ] Spring Data Redis 또는 Redisson 의존성과 환경변수 설정 추가
-- [ ] `Idempotency-Key` 헤더와 기존 `orderId`의 관계 결정
-- [ ] 요청 payload hash를 만들어 같은 키의 다른 요청을 거절
-- [ ] `payment:{key}:lock` 분산락 구현
-- [ ] lock 해제 시 본인 token을 확인하는 atomic unlock 적용
-- [ ] `payment:{key}:result` 결과 캐시와 TTL 정책 구현
-- [ ] lock 획득 후 cache/DB double check 적용
-- [ ] 최초 HTTP status와 응답 body를 DB에 저장
-- [ ] 동시 요청의 대기 시간과 timeout 응답 정책 결정
-- [ ] Redis 장애 시 DB 기반 멱등성 fallback 구현
-- [ ] 애플리케이션 2개 인스턴스를 띄워 동일 요청 동시 테스트
-- [ ] Redis 정상·장애·TTL 만료·재시작 시나리오 검증
-- [ ] DB-only 방식과 Redis+DB 방식의 처리 흐름·지연시간·외부 호출 수 비교
+- [x] Docker Compose에 Redis를 localhost 바인딩으로 추가
+- [x] Redisson 의존성과 환경변수 설정 추가
+- [x] `Idempotency-Key` 헤더와 기존 `orderId`의 관계 결정
+- [x] 요청 payload hash를 만들어 같은 키의 다른 요청을 거절
+- [x] scope hash 기반 Redis 분산락 구현
+- [x] Redisson의 lock 소유권 확인과 원자적 unlock 적용
+- [x] scope hash 기반 결과 캐시와 1시간 TTL 정책 구현
+- [x] lock 획득 후 cache/DB double check 적용
+- [x] 최초 HTTP status와 응답 body를 DB에 저장
+- [x] 동시 요청의 500ms 대기와 처리 중 HTTP 409 정책 결정
+- [x] Redis 장애 시 DB 기반 멱등성 fallback 구현
+- [x] 애플리케이션 2개 인스턴스를 띄워 동일 요청 동시 테스트
+- [x] Redis 정상·중단·cache miss·재시작 시나리오 검증
+- [x] DB-only 방식과 Redis+DB 방식의 처리 흐름·지연시간·외부 호출 수 비교
 
 상세 설계:
 

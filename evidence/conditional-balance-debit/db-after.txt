@@ -1,0 +1,20 @@
+id  order_id                     status     voucher_number                                  failure_message
+106 ORDER-BALANCE-RACE-001-A     FAILED     NULL                                            point balance was already used by another payment or is insufficient
+107 ORDER-BALANCE-RACE-001-B     SUCCEEDED  CP-9b0571a6-10ef-442a-b2d2-a60f08eed4a5        NULL
+
+provider_voucher
+id  order_id                     voucher_number                                  status
+14  ORDER-BALANCE-RACE-001-A     CP-d3e98f92-5e50-4b32-b8ed-a1b4b748906b        CANCELED
+15  ORDER-BALANCE-RACE-001-B     CP-9b0571a6-10ef-442a-b2d2-a60f08eed4a5        ISSUED
+
+voucher_purchase
+id  order_id                     voucher_number                                  issue_status  use_status
+5   ORDER-BALANCE-RACE-001-B     CP-9b0571a6-10ef-442a-b2d2-a60f08eed4a5        ISSUED        UNUSED
+
+point_balance
+id  balance
+1   0
+
+point_lot used by the winning request
+id  amount  voucher_number                                  status
+3   5000    CP-9b0571a6-10ef-442a-b2d2-a60f08eed4a5        USED

@@ -39,7 +39,7 @@
 | 1차 | 쇼핑몰의 동일 주문 중복 실행 | `payment_attempt.order_id` unique와 `PROCESSING` 선점 | 외부 발행 2→1, Deadlock 1→0 |
 | 2차 | 외부 Mock API 자체의 중복 발행 | `provider_voucher.order_id` unique와 기존 번호·PIN replay | 동시 issue 2회, 실제 바우처 1장 |
 | 3차 | 잔액 부족도 외부 발행 후 취소 | 상품 가격·총 잔액·미만료 lot 사전 검증 | HTTP 500→422, issue/cancel 1→0 |
-| 다음 | 다중 서버 멱등성, 서로 다른 주문의 잔액 경쟁 | Redis cache, Redisson 분산락, DB unique, 조건부 UPDATE/row lock | 정확한 replay와 잔액 정합성 검증 예정 |
+| 4차 | 다중 서버 멱등성, 서로 다른 주문의 잔액 경쟁 | Redis cache, Redisson 분산락, DB unique, 조건부 UPDATE | 정확한 replay와 잔액 정합성 검증 완료 |
 
 ### 03~07 API 요청·응답 시퀀스
 
@@ -52,11 +52,11 @@ Redis와 MySQL 사이의 실제 요청 순서를 단계별로 분리했다.
 | `04-1차 PaymentAttempt API 흐름` | 구현·검증 완료 | `PROCESSING` 선점, 동시 중복의 HTTP 409 차단, 완료 결과의 HTTP 200 replay |
 | `05-2차 외부 발행 멱등 API 흐름` | 구현·검증 완료 | 최초 발행 HTTP 201, 동일 요청 HTTP 200 replay, 다른 상품의 HTTP 409 거절 |
 | `06-3차 외부 호출 전 검증 API 흐름` | 구현·검증 완료 | 상품 가격·잔액·미만료 lot 검증 실패 시 외부 호출 없이 HTTP 422 반환 |
-| `07-4차 Redis 분산락 API 흐름 (설계안)` | 미구현 | 두 API 서버, Redis 분산락·응답 캐시, DB 이중 확인·조건부 차감의 목표 흐름 |
+| `07-4차 Redis+DB 멱등성 API 흐름 (구현 완료)` | 구현·검증 완료 | 두 API 서버, Redis 분산락·응답 캐시, DB fallback·조건부 차감과 실제 측정 결과 |
 
-3차 페이지에는 사전 조회와 실제 차감 사이의 경쟁 조건이 아직 남아 있음을
-표시했다. 4차 페이지는 구현 결과로 오해하지 않도록 페이지 이름과 본문의
-노트에 모두 `설계안 · 아직 미구현`이라고 명시했다.
+3차 페이지에는 사전 조회와 실제 차감 사이의 경쟁 조건이 남아 있음을 표시했다.
+4차 페이지에서는 이 경쟁을 조건부 UPDATE로 해결한 흐름과 Redis/DB 역할 분리,
+2개 인스턴스·Redis 장애·성능 비교의 실제 결과를 함께 표시했다.
 
 ### 08~10 테이블 명세서와 ERD
 
