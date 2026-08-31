@@ -2,6 +2,7 @@ package com.paymentlab.voucher.payment.domain;
 
 import com.paymentlab.voucher.payment.api.PointPaymentController.PointPaymentRequest;
 import com.paymentlab.voucher.payment.api.PointPaymentController.PointPaymentResponse;
+import com.paymentlab.voucher.payment.application.PaymentIdempotencyContext;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -21,6 +22,21 @@ public class PaymentAttempt {
 
     @Column(name = "order_id", nullable = false, unique = true)
     private String orderId;
+
+    @Column(name = "idempotency_key")
+    private String idempotencyKey;
+
+    @Column(name = "client_id")
+    private String clientId;
+
+    @Column(name = "http_method")
+    private String httpMethod;
+
+    @Column(name = "api_path")
+    private String apiPath;
+
+    @Column(name = "request_hash", columnDefinition = "char(64)")
+    private String requestHash;
 
     @Column(name = "point_wallet_uid", nullable = false)
     private String pointWalletUid;
@@ -49,8 +65,17 @@ public class PaymentAttempt {
     @Column(name = "balance_after_payment")
     private String balanceAfterPayment;
 
+    @Column(name = "http_status")
+    private Integer httpStatus;
+
+    @Column(name = "response_body", columnDefinition = "longtext")
+    private String responseBody;
+
     @Column(name = "failure_message")
     private String failureMessage;
+
+    @Column(name = "expires_at")
+    private LocalDateTime expiresAt;
 
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
@@ -72,8 +97,30 @@ public class PaymentAttempt {
         this.updatedAt = this.createdAt;
     }
 
+    private PaymentAttempt(
+            PointPaymentRequest request,
+            PaymentIdempotencyContext context,
+            LocalDateTime expiresAt
+    ) {
+        this(request);
+        this.idempotencyKey = context.idempotencyKey();
+        this.clientId = context.clientId();
+        this.httpMethod = context.httpMethod();
+        this.apiPath = context.apiPath();
+        this.requestHash = context.requestHash();
+        this.expiresAt = expiresAt;
+    }
+
     public static PaymentAttempt processing(PointPaymentRequest request) {
         return new PaymentAttempt(request);
+    }
+
+    public static PaymentAttempt processing(
+            PointPaymentRequest request,
+            PaymentIdempotencyContext context,
+            LocalDateTime expiresAt
+    ) {
+        return new PaymentAttempt(request, context, expiresAt);
     }
 
     public boolean matches(PointPaymentRequest request) {
@@ -84,6 +131,14 @@ public class PaymentAttempt {
                 && requestedPoint == request.point();
     }
 
+    public boolean matches(PaymentIdempotencyContext context) {
+        return Objects.equals(clientId, context.clientId())
+                && Objects.equals(httpMethod, context.httpMethod())
+                && Objects.equals(apiPath, context.apiPath())
+                && Objects.equals(idempotencyKey, context.idempotencyKey())
+                && Objects.equals(requestHash, context.requestHash());
+    }
+
     public void succeed(PointPaymentResponse response) {
         this.status = "SUCCEEDED";
         this.voucherNumber = response.voucherNumber();
@@ -92,6 +147,12 @@ public class PaymentAttempt {
         this.balanceAfterPayment = response.balanceAfterPayment();
         this.failureMessage = null;
         this.updatedAt = LocalDateTime.now();
+    }
+
+    public void succeed(PointPaymentResponse response, int httpStatus, String responseBody) {
+        succeed(response);
+        this.httpStatus = httpStatus;
+        this.responseBody = responseBody;
     }
 
     public void fail(String message) {
@@ -131,6 +192,18 @@ public class PaymentAttempt {
 
     public String getFailureMessage() {
         return failureMessage;
+    }
+
+    public String getRequestHash() {
+        return requestHash;
+    }
+
+    public Integer getHttpStatus() {
+        return httpStatus;
+    }
+
+    public String getResponseBody() {
+        return responseBody;
     }
 
     public boolean isProcessing() {

@@ -7,4 +7,11 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface PaymentAttemptRepository extends JpaRepository<PaymentAttempt, Long> {
 
     Optional<PaymentAttempt> findByOrderId(String orderId);
+
+    Optional<PaymentAttempt> findByClientIdAndHttpMethodAndApiPathAndIdempotencyKey(
+            String clientId,
+            String httpMethod,
+            String apiPath,
+            String idempotencyKey
+    );
 }

@@ -50,6 +50,19 @@ Content-Type: application/json
   "point": 5000
 }
 
+### Redis 멱등 포인트 결제 - 최초/재요청 모두 최초 status와 body replay
+POST {{baseUrl}}/api/payments/point/redis-idempotent
+Idempotency-Key: REDIS-IDEMPOTENT-001
+Content-Type: application/json
+
+{
+  "orderId": "ORDER-REDIS-IDEMPOTENT-001",
+  "pointWalletUid": "point-wallet-001",
+  "voucherProductId": 1,
+  "pointBalanceId": 1,
+  "point": 5000
+}
+
 ### 같은 orderId 재요청 - DB unique 제약 확인용
 POST {{baseUrl}}/api/payments/point/legacy
 Content-Type: application/json

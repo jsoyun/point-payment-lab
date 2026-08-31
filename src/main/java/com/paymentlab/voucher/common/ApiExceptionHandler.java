@@ -2,6 +2,7 @@ package com.paymentlab.voucher.common;
 
 import java.time.LocalDateTime;
 import com.paymentlab.voucher.payment.application.PaymentAttemptConflictException;
+import com.paymentlab.voucher.payment.application.PointBalanceConflictException;
 import com.paymentlab.voucher.payment.application.PointPaymentValidationException;
 import com.paymentlab.voucher.provider.ProviderIssueConflictException;
 import java.util.Map;
@@ -19,10 +20,10 @@ public class ApiExceptionHandler {
     public ResponseEntity<Map<String, Object>> handlePaymentAttemptConflict(
             PaymentAttemptConflictException error
     ) {
-        return ResponseEntity.status(HttpStatus.CONFLICT)
+        return ResponseEntity.status(error.getHttpStatus())
                 .body(Map.of(
                         "timestamp", LocalDateTime.now().toString(),
-                        "status", HttpStatus.CONFLICT.value(),
+                        "status", error.getHttpStatus().value(),
                         "code", error.getCode(),
                         "message", error.getMessage()
                 ));
@@ -49,6 +50,19 @@ public class ApiExceptionHandler {
                 .body(Map.of(
                         "timestamp", LocalDateTime.now().toString(),
                         "status", HttpStatus.UNPROCESSABLE_ENTITY.value(),
+                        "code", error.getCode(),
+                        "message", error.getMessage()
+                ));
+    }
+
+    @ExceptionHandler(PointBalanceConflictException.class)
+    public ResponseEntity<Map<String, Object>> handlePointBalanceConflict(
+            PointBalanceConflictException error
+    ) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(Map.of(
+                        "timestamp", LocalDateTime.now().toString(),
+                        "status", HttpStatus.CONFLICT.value(),
                         "code", error.getCode(),
                         "message", error.getMessage()
                 ));

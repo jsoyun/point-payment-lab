@@ -7,6 +7,7 @@ import com.paymentlab.voucher.payment.domain.repository.PaymentAttemptRepository
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import java.time.LocalDateTime;
 
 @Service
 public class PaymentAttemptWriter {
@@ -23,9 +24,29 @@ public class PaymentAttemptWriter {
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public PaymentAttempt claim(
+            PointPaymentRequest request,
+            PaymentIdempotencyContext context,
+            LocalDateTime expiresAt
+    ) {
+        return repository.saveAndFlush(PaymentAttempt.processing(request, context, expiresAt));
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void markSucceeded(String orderId, PointPaymentResponse response) {
         PaymentAttempt attempt = find(orderId);
         attempt.succeed(response);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void markSucceeded(
+            String orderId,
+            PointPaymentResponse response,
+            int httpStatus,
+            String responseBody
+    ) {
+        PaymentAttempt attempt = find(orderId);
+        attempt.succeed(response, httpStatus, responseBody);
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
