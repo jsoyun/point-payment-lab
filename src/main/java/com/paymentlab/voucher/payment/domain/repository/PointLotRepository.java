@@ -15,6 +15,7 @@ public interface PointLotRepository extends JpaRepository<PointLot, Long> {
               and u.pointBalanceId = :pointBalanceId
               and u.status is null
               and u.voucherNumber is null
+              and u.expiresAt > current_timestamp
             order by u.expiresAt asc
             """)
     List<PointLot> findUsableLots(

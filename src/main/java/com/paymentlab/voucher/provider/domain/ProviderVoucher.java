@@ -26,7 +26,7 @@ public class ProviderVoucher {
     @Column(name = "pin_number", nullable = false)
     private String pinNumber;
 
-    @Column(name = "order_id", nullable = false)
+    @Column(name = "order_id", nullable = false, unique = true)
     private String orderId;
 
     @Column(nullable = false)

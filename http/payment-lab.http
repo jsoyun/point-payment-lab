@@ -26,12 +26,37 @@ Content-Type: application/json
   "point": 5000
 }
 
+### 멱등 포인트 결제 - 최초 요청은 201, 완료 후 같은 요청은 200
+POST {{baseUrl}}/api/payments/point/idempotent
+Content-Type: application/json
+
+{
+  "orderId": "AL-IDEMPOTENT-001",
+  "pointWalletUid": "point-wallet-001",
+  "voucherProductId": 1,
+  "pointBalanceId": 1,
+  "point": 5000
+}
+
 ### 정상 포인트 결제 - 다른 orderId
 POST {{baseUrl}}/api/payments/point/legacy
 Content-Type: application/json
 
 {
   "orderId": "AL-TEST-002",
+  "pointWalletUid": "point-wallet-001",
+  "voucherProductId": 1,
+  "pointBalanceId": 1,
+  "point": 5000
+}
+
+### Redis 멱등 포인트 결제 - 최초/재요청 모두 최초 status와 body replay
+POST {{baseUrl}}/api/payments/point/redis-idempotent
+Idempotency-Key: REDIS-IDEMPOTENT-001
+Content-Type: application/json
+
+{
+  "orderId": "ORDER-REDIS-IDEMPOTENT-001",
   "pointWalletUid": "point-wallet-001",
   "voucherProductId": 1,
   "pointBalanceId": 1,

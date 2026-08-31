@@ -1,0 +1,13 @@
+id	order_id	voucher_number	status	created_at
+11	INSUFFICIENT-BASELINE-001	CP-7efe6ac0-7b70-4796-9c9e-de0aea824ac2	CANCELED	2026-07-28 22:41:21.227268
+
+purchase_count
+0
+
+id	balance
+1	5000
+
+id	amount	status	voucher_number
+1	3000	USED	CP-0f577b17-419b-4460-b177-8c97eb59cd88
+2	2000	USED	CP-0f577b17-419b-4460-b177-8c97eb59cd88
+3	5000	NULL	NULL

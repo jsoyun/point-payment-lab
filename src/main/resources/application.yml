@@ -24,3 +24,11 @@ server:
 
 voucher-provider:
   mock-base-url: ${VOUCHER_PROVIDER_BASE_URL:http://localhost:${SERVER_PORT:8080}/mock/voucher-provider}
+
+payment:
+  redis-idempotency:
+    enabled: ${PAYMENT_REDIS_IDEMPOTENCY_ENABLED:true}
+    address: ${REDIS_ADDRESS:redis://127.0.0.1:6379}
+    client-id: ${PAYMENT_IDEMPOTENCY_CLIENT_ID:point-payment-lab-mall}
+    result-ttl: ${PAYMENT_IDEMPOTENCY_RESULT_TTL:1h}
+    lock-wait-time: ${PAYMENT_IDEMPOTENCY_LOCK_WAIT_TIME:500ms}

@@ -17,5 +17,17 @@ services:
     volumes:
       - point-payment-lab-mysql:/var/lib/mysql
 
+  redis:
+    image: redis:7.4-alpine
+    container_name: point-payment-lab-redis
+    ports:
+      # 로컬 실습용 바인딩이다. 운영에서는 Redis를 공인망에 노출하지 않고
+      # 애플리케이션과 같은 private network에서만 접근한다.
+      - "${REDIS_BIND_ADDRESS:-127.0.0.1}:${REDIS_HOST_PORT:-6379}:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - point-payment-lab-redis:/data
+
 volumes:
   point-payment-lab-mysql:
+  point-payment-lab-redis:

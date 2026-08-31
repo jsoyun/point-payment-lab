@@ -39,6 +39,8 @@ public class LegacyPointPaymentService {
     private final PointLedgerRepository pointLedgerRepository;
     private final VoucherPurchaseRepository voucherPurchaseRepository;
     private final VoucherProviderClient voucherProviderClient;
+    private final PointPaymentPreValidator pointPaymentPreValidator;
+    private final PointBalanceDebitService pointBalanceDebitService;
     private final TransactionTemplate transactionTemplate;
 
     public LegacyPointPaymentService(
@@ -50,6 +52,8 @@ public class LegacyPointPaymentService {
             PointLedgerRepository pointLedgerRepository,
             VoucherPurchaseRepository voucherPurchaseRepository,
             VoucherProviderClient voucherProviderClient,
+            PointPaymentPreValidator pointPaymentPreValidator,
+            PointBalanceDebitService pointBalanceDebitService,
             PlatformTransactionManager transactionManager
     ) {
         this.pointWalletRepository = pointWalletRepository;
@@ -60,10 +64,20 @@ public class LegacyPointPaymentService {
         this.pointLedgerRepository = pointLedgerRepository;
         this.voucherPurchaseRepository = voucherPurchaseRepository;
         this.voucherProviderClient = voucherProviderClient;
+        this.pointPaymentPreValidator = pointPaymentPreValidator;
+        this.pointBalanceDebitService = pointBalanceDebitService;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
     public PointPaymentResponse pay(PointPaymentRequest request) {
+        return pay(request, false);
+    }
+
+    public PointPaymentResponse payWithConditionalDebit(PointPaymentRequest request) {
+        return pay(request, true);
+    }
+
+    private PointPaymentResponse pay(PointPaymentRequest request, boolean conditionalDebit) {
         PointWallet pointWallet = pointWalletRepository.findByPointWalletUid(request.pointWalletUid())
                 .orElseThrow(() -> new IllegalArgumentException("point wallet not found"));
         VoucherProduct voucherProduct = voucherProductRepository.findById(request.voucherProductId())
@@ -75,6 +89,19 @@ public class LegacyPointPaymentService {
             throw new IllegalArgumentException("point balance does not belong to point wallet");
         }
 
+        long usableLotTotal = pointLotRepository.findUsableLots(
+                        pointWallet.getId(),
+                        pointBalance.getId()
+                ).stream()
+                .mapToLong(lot -> Money.parse(lot.getAmount()))
+                .sum();
+        pointPaymentPreValidator.validate(
+                request.point(),
+                voucherProduct.getSellPrice(),
+                Money.parse(pointBalance.getBalance()),
+                usableLotTotal
+        );
+
         IssueVoucherResponse issuedVoucher = voucherProviderClient.issue(new IssueVoucherRequest(
                 voucherProduct.getVoucherProductCode(),
                 request.orderId()
@@ -82,7 +109,10 @@ public class LegacyPointPaymentService {
 
         try {
             return transactionTemplate.execute(status ->
-                    savePaymentTransaction(request, pointWallet, voucherProduct, pointBalance, issuedVoucher)
+                    savePaymentTransaction(
+                            request, pointWallet, voucherProduct, pointBalance,
+                            issuedVoucher, conditionalDebit
+                    )
             );
 
             //DB중복된 orderId로 인한 DataIntegrityViolationException 발생 시 예외 처리
@@ -108,11 +138,18 @@ public class LegacyPointPaymentService {
             PointWallet pointWallet,
             VoucherProduct voucherProduct,
             PointBalance pointBalance,
-            IssueVoucherResponse issuedVoucher
+            IssueVoucherResponse issuedVoucher,
+            boolean conditionalDebit
     ) {
+        PointBalance paymentBalance = conditionalDebit
+                ? pointBalanceDebitService.debit(
+                        pointBalance.getId(), pointWallet.getId(), request.point()
+                )
+                : pointBalance;
+
         List<PointLot> usableLots = pointLotRepository.findUsableLots(
                 pointWallet.getId(),
-                pointBalance.getId()
+                paymentBalance.getId()
         );
 
         long remain = request.point();
@@ -143,14 +180,16 @@ public class LegacyPointPaymentService {
             used += useAmount;
         }
 
-        pointBalance.subtract(request.point());
-        pointBalanceRepository.save(pointBalance);
+        if (!conditionalDebit) {
+            paymentBalance.subtract(request.point());
+            pointBalanceRepository.save(paymentBalance);
+        }
 
         PointLedger history = PointLedger.withdrawal(
                 pointWallet.getId(),
-                pointBalance.getId(),
+                paymentBalance.getId(),
                 request.point(),
-                pointBalance.getBalance(),
+                paymentBalance.getBalance(),
                 "포인트 바우처 구매"
         );
         pointLedgerRepository.save(history);
@@ -177,7 +216,7 @@ public class LegacyPointPaymentService {
                 issuedVoucher.voucherNumber(),
                 issuedVoucher.pinNumber(),
                 request.point(),
-                pointBalance.getBalance()
+                paymentBalance.getBalance()
         );
     }
 }

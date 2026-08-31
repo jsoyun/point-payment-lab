@@ -5,9 +5,11 @@ import com.paymentlab.voucher.provider.VoucherProviderClient.IssueVoucherRequest
 import com.paymentlab.voucher.provider.VoucherProviderClient.IssueVoucherResponse;
 import com.paymentlab.voucher.provider.domain.ProviderVoucher;
 import com.paymentlab.voucher.provider.domain.ProviderVoucherRepository;
-import java.util.UUID;
+import com.paymentlab.voucher.provider.IdempotentProviderVoucherIssueService.ProviderIssueResult;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -20,27 +22,26 @@ import org.springframework.web.bind.annotation.RestController;
 public class MockVoucherProviderController {
 
     private final ProviderVoucherRepository providerVoucherRepository;
+    private final IdempotentProviderVoucherIssueService issueService;
     private final AtomicLong issueCallCount = new AtomicLong();
     private final AtomicLong cancelCallCount = new AtomicLong();
 
-    public MockVoucherProviderController(ProviderVoucherRepository providerVoucherRepository) {
+    public MockVoucherProviderController(
+            ProviderVoucherRepository providerVoucherRepository,
+            IdempotentProviderVoucherIssueService issueService
+    ) {
         this.providerVoucherRepository = providerVoucherRepository;
+        this.issueService = issueService;
     }
 
     @PostMapping("/issue")
-    public IssueVoucherResponse issue(@RequestBody IssueVoucherRequest request) {
+    public ResponseEntity<IssueVoucherResponse> issue(@RequestBody IssueVoucherRequest request) {
         issueCallCount.incrementAndGet();
-        String voucherNumber = "CP-" + UUID.randomUUID();
-        String pinNumber = "PIN-" + UUID.randomUUID().toString().substring(0, 8);
-
-        providerVoucherRepository.save(ProviderVoucher.issued(
-                request.voucherProductCode(),
-                voucherNumber,
-                pinNumber,
-                request.orderId()
-        ));
-
-        return new IssueVoucherResponse("00", voucherNumber, pinNumber);
+        ProviderIssueResult result = issueService.issue(request);
+        return ResponseEntity
+                .status(result.replayed() ? HttpStatus.OK : HttpStatus.CREATED)
+                .header("Idempotency-Replayed", String.valueOf(result.replayed()))
+                .body(result.response());
     }
 
     @PostMapping("/cancel")

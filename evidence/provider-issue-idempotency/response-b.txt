@@ -1,0 +1,2 @@
+{"resultCode":"00","voucherNumber":"CP-0a7a1d33-d0a9-42cb-a559-310ac2cb6b35","pinNumber":"PIN-5ee3e840"}
+HTTP 200

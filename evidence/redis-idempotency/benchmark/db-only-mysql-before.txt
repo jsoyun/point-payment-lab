@@ -1,0 +1,3 @@
+Com_insert	12
+Com_select	251
+Com_update	13
